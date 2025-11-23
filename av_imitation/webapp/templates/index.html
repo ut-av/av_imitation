@@ -242,13 +242,22 @@
                     <img :src="currentFrameUrl" v-if="currentFrameUrl" alt="Bag Frame">
                     <div v-else class="loading">Select a point on the timeline</div>
                 </div>
+                <div v-if="bufferingProgress < 100 && currentBag"
+                    style="width: 100%; height: 4px; background: #333; margin-top: 4px;">
+                    <div
+                        :style="{ width: bufferingProgress + '%', height: '100%', background: '#03dac6', transition: 'width 0.2s' }">
+                    </div>
+                </div>
 
                 <div class="controls">
-                    <button @click="togglePlay">[[ isPlaying ? 'Pause' : 'Play' ]]</button>
-                    <button class="secondary" @click="markStart">Mark Cut Start [</button>
-                    <button class="secondary" @click="markEnd">Mark Cut End ]</button>
-                    <button class="danger" @click="clearCuts">Clear Cuts</button>
-                    <span>Time: [[ currentTime.toFixed(2) ]] / [[ duration.toFixed(2) ]] s</span>
+                    <button @click="togglePlay" :disabled="bufferingProgress < 100"
+                        :style="{ opacity: bufferingProgress < 100 ? 0.5 : 1, cursor: bufferingProgress < 100 ? 'not-allowed' : 'pointer' }">
+                        [[ bufferingProgress < 100 ? `Buffering ${bufferingProgress}%` : (isPlaying ? 'Pause' : 'Play' )
+                            ]] </button>
+                            <button class="secondary" @click="markStart">Mark Cut Start [</button>
+                            <button class="secondary" @click="markEnd">Mark Cut End ]</button>
+                            <button class="danger" @click="clearCuts">Clear Cuts</button>
+                            <span>Time: [[ currentTime.toFixed(2) ]] / [[ duration.toFixed(2) ]] s</span>
                 </div>
 
                 <div class="timeline-container" ref="timeline" @click="seek" @mousemove="handleMouseMove">

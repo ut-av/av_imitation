@@ -31,12 +31,62 @@ createApp({
             }
         });
 
+        const frameCache = ref(new Map()); // Key: timestamp.toFixed(1), Value: blobUrl
+        const preloadController = ref(null);
+        const bufferingProgress = ref(0);
+
         const currentFrameUrl = computed(() => {
             if (!currentBag.value) return null;
-            // Use a cache buster or just timestamp to force reload if needed, 
-            // though browser should handle it if url changes.
-            return `/api/bag/${currentBag.value}/frame/${currentTime.value}`;
+
+            // Try to get from cache first
+            const key = currentTime.value.toFixed(1);
+            if (frameCache.value.has(key)) {
+                return frameCache.value.get(key);
+            }
+
+            // Fallback to direct URL (will be slow/cancelled if not cached)
+            return `/api/bag/${currentBag.value}/frame/${currentTime.value.toFixed(2)}?_=${Date.now()}`;
         });
+
+        const preloadBag = async (bagName, durationSec) => {
+            if (preloadController.value) {
+                preloadController.value.abort();
+            }
+            const controller = new AbortController();
+            preloadController.value = controller;
+
+            frameCache.value.clear();
+            bufferingProgress.value = 0;
+
+            const step = 0.1;
+            const totalSteps = Math.ceil(durationSec / step);
+            let loaded = 0;
+
+            // We'll fetch sequentially to avoid overwhelming the browser/server
+            for (let t = 0; t <= durationSec; t += step) {
+                if (controller.signal.aborted) break;
+
+                const key = t.toFixed(1);
+                // Skip if already cached (though we cleared it)
+                if (frameCache.value.has(key)) continue;
+
+                try {
+                    const res = await fetch(`/api/bag/${bagName}/frame/${t.toFixed(2)}`);
+                    if (res.ok) {
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        frameCache.value.set(key, url);
+                    }
+                } catch (e) {
+                    console.warn(`Failed to preload frame at ${t}`, e);
+                }
+
+                loaded++;
+                bufferingProgress.value = Math.round((loaded / totalSteps) * 100);
+
+                // Yield to main thread occasionally if needed (await fetch does this mostly)
+            }
+        };
 
         const selectBag = async (bag) => {
             currentBag.value = bag;
@@ -45,6 +95,13 @@ createApp({
             cuts.value = [];
             description.value = "";
             activeCutStart.value = null;
+
+            // Stop any existing preload
+            if (preloadController.value) {
+                preloadController.value.abort();
+            }
+            frameCache.value.clear();
+            bufferingProgress.value = 0;
 
             try {
                 const res = await fetch(`/api/bag/${bag}/info`);
@@ -55,12 +112,17 @@ createApp({
                     description.value = data.user_meta.description || "";
                     cuts.value = data.user_meta.cuts || [];
                 }
+
+                // Start preloading
+                preloadBag(bag, duration.value);
+
             } catch (e) {
                 console.error("Failed to load bag info", e);
             }
         };
 
         const togglePlay = () => {
+            if (bufferingProgress.value < 100) return;
             isPlaying.value = !isPlaying.value;
             if (isPlaying.value) {
                 playInterval = setInterval(() => {
@@ -171,6 +233,7 @@ createApp({
             cuts,
             activeCutStart,
             timeline,
+            bufferingProgress,
             selectBag,
             togglePlay,
             seek,
@@ -183,4 +246,5 @@ createApp({
         };
     }
 }).mount('#app');
+
 
