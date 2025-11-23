@@ -167,13 +167,18 @@ def get_frame(bag_name, timestamp):
     converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
     reader.open(storage_options, converter_options)
     
+    metadata = reader.get_metadata()
+    start_time_ns = metadata.starting_time.nanoseconds
+    target_ns = start_time_ns + int(timestamp * 1e9)
+    
     # Create a filter for image topics
     # storage_filter = StorageFilter(topics=['/camera/image_raw', '/camera/image_raw/compressed'])
     # reader.set_filter(storage_filter) 
     # set_filter is not directly exposed in simple python wrapper in older versions, check availability.
     # We'll just skip non-image messages manually.
     
-    target_ns = int(timestamp * 1e9)
+    # We'll just skip non-image messages manually.
+
     
     # We can't seek directly. We have to read.
     # To make this faster for the web app, maybe we should extract a low-res video or thumbnails?
@@ -183,33 +188,39 @@ def get_frame(bag_name, timestamp):
     
     try:
         reader.seek(target_ns)
-    except:
-        # Fallback if seek not available (older ros2)
+    except Exception as e:
+        print(f"Seek failed: {e}")
         pass
 
     while reader.has_next():
         (topic, data, t) = reader.read_next()
+        
         if t >= target_ns:
+            # print(f"Found msg at {t} (target {target_ns}): {topic}")
             if 'image' in topic:
                 msg_type = get_message('sensor_msgs/msg/Image')
                 if 'compressed' in topic:
                      msg_type = get_message('sensor_msgs/msg/CompressedImage')
                 
-                msg = deserialize_message(data, msg_type)
-                
-                cv_img = None
-                if isinstance(msg, Image):
-                    cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-                elif isinstance(msg, CompressedImage):
-                    np_arr = np.frombuffer(msg.data, np.uint8)
-                    cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                
-                if cv_img is not None:
-                    _, buffer = cv2.imencode('.jpg', cv_img)
-                    return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+                try:
+                    msg = deserialize_message(data, msg_type)
+                    
+                    cv_img = None
+                    if isinstance(msg, Image):
+                        cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                    elif isinstance(msg, CompressedImage):
+                        np_arr = np.frombuffer(msg.data, np.uint8)
+                        cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    
+                    if cv_img is not None:
+                        _, buffer = cv2.imencode('.jpg', cv_img)
+                        return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+                except Exception as e:
+                    print(f"Error decoding image: {e}")
             
-            # If we went too far past (e.g. 0.1s), stop
-            if t > target_ns + 1e8:
+            # If we went too far past (e.g. 0.5s), stop
+            if t > target_ns + 5e8:
+                print(f"Timeout searching for frame. Current: {t}, Target: {target_ns}")
                 break
                 
     return "Frame not found", 404
