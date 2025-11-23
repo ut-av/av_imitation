@@ -147,7 +147,8 @@ createApp({
 
         // Settings State
         const showSettings = ref(false);
-        const persistCache = ref(localStorage.getItem('persistCache') === 'true');
+        // Default to true if not set (null !== 'false' is true)
+        const persistCache = ref(localStorage.getItem('persistCache') !== 'false');
         const cacheSize = ref(0);
 
         const cacheSizeMB = computed(() => (cacheSize.value / (1024 * 1024)).toFixed(2));
@@ -571,11 +572,20 @@ createApp({
             deleteBag,
             getSparklinePoints,
             formatBagDate: (bag) => {
+                const options = {
+                    year: 'numeric',
+                    month: 'numeric',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                };
+
                 // If bag is an object with start_time, use it
                 if (bag.start_time) {
                     const date = new Date(bag.start_time * 1000);
                     if (!isNaN(date.getTime())) {
-                        return date.toLocaleString();
+                        return date.toLocaleString(undefined, options);
                     }
                 }
 
@@ -592,7 +602,7 @@ createApp({
                     const second = parts[6];
                     const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`);
                     if (!isNaN(date.getTime())) {
-                        return date.toLocaleString();
+                        return date.toLocaleString(undefined, options);
                     }
                 }
                 return bagName;
