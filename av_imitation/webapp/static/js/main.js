@@ -317,6 +317,52 @@ createApp({
             }
         };
 
+        const telemetry = ref([]);
+
+        const currentTelemetry = computed(() => {
+            if (!telemetry.value || telemetry.value.length === 0) {
+                return { steer: 0, throttle: 0, l1: false, l2: 0 };
+            }
+
+            // Find closest telemetry point
+            // Since telemetry is sorted by time, we can use binary search or just findIndex
+            // For simplicity and since array might be large, let's try a simple approach first
+            // or binary search if performance is needed.
+            // Given 100Hz data for 10 mins = 60000 points. Array.find might be slow if called every frame.
+            // Let's use a simple index tracking since playback is sequential usually.
+
+            // Optimization: Cache last index?
+            // For now, let's just find the first point > currentTime and take the one before it.
+
+            // Binary search implementation for performance
+            let low = 0;
+            let high = telemetry.value.length - 1;
+            let idx = 0;
+
+            while (low <= high) {
+                const mid = Math.floor((low + high) / 2);
+                if (telemetry.value[mid].time < currentTime.value) {
+                    idx = mid;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+
+            return telemetry.value[idx] || { steer: 0, throttle: 0, l1: false, l2: 0 };
+        });
+
+        const getBarStyle = (val) => {
+            // val is -1 to 1
+            // Center is 50%
+            const pct = Math.abs(val) * 50; // 0 to 50%
+            const left = val < 0 ? 50 - pct : 50;
+            return {
+                left: `${left}%`,
+                width: `${pct}%`
+            };
+        };
+
         const selectBag = async (bag) => {
             // bag is now an object
             currentBag.value = bag.name;
@@ -325,6 +371,7 @@ createApp({
             cuts.value = [];
             description.value = "";
             activeCutStart.value = null;
+            telemetry.value = [];
 
             // Stop any existing preload
             if (preloadController.value) {
@@ -342,6 +389,10 @@ createApp({
                 if (data.user_meta) {
                     description.value = data.user_meta.description || "";
                     cuts.value = data.user_meta.cuts || [];
+                }
+
+                if (data.telemetry) {
+                    telemetry.value = data.telemetry;
                 }
 
                 // Start preloading
@@ -606,7 +657,10 @@ createApp({
                     }
                 }
                 return bagName;
-            }
+            },
+            // Telemetry
+            currentTelemetry,
+            getBarStyle
         };
     }
 }).mount('#app');

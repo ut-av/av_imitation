@@ -107,6 +107,10 @@ def list_bags():
                 
                 bags.append(bag_data)
                 
+    # Sort bags by start_time descending (most recent first)
+    # If start_time is missing (0), it will be at the end (or beginning depending on logic, let's assume 0 is old)
+    bags.sort(key=lambda x: x.get("start_time", 0), reverse=True)
+    
     return jsonify(bags)
 
 @app.route('/api/bag/<bag_name>', methods=['DELETE'])
@@ -146,7 +150,86 @@ def bag_info(bag_name):
         if cuts:
             user_meta["cuts"] = cuts
             
-    return jsonify({"info": info, "user_meta": user_meta})
+    # Check for telemetry data
+    telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
+    telemetry = []
+    if os.path.exists(telemetry_path):
+        try:
+            with open(telemetry_path, 'r') as f:
+                telemetry = json.load(f)
+        except:
+            pass
+    else:
+        # Extract telemetry if not found
+        telemetry = extract_telemetry(bag_path)
+        if telemetry:
+             if not os.path.exists(PROCESSED_DIR):
+                 os.makedirs(PROCESSED_DIR)
+             with open(telemetry_path, 'w') as f:
+                 json.dump(telemetry, f)
+
+    return jsonify({"info": info, "user_meta": user_meta, "telemetry": telemetry})
+
+def extract_telemetry(bag_path):
+    reader = SequentialReader()
+    storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
+    converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
+    try:
+        reader.open(storage_options, converter_options)
+    except Exception as e:
+        print(f"Error opening bag for telemetry: {e}")
+        return []
+
+    metadata = reader.get_metadata()
+    joy_topic = None
+    for t in metadata.topics_with_message_count:
+        if 'joy' in t.topic_metadata.name:
+            joy_topic = t.topic_metadata.name
+            break
+    
+    if not joy_topic:
+        return []
+
+    storage_filter = StorageFilter(topics=[joy_topic])
+    reader.set_filter(storage_filter)
+
+    telemetry = []
+    msg_type = get_message('sensor_msgs/msg/Joy')
+    
+    while reader.has_next():
+        (topic, data, t) = reader.read_next()
+        t_sec = (t - metadata.starting_time.nanoseconds) / 1e9
+        
+        if topic == joy_topic:
+            msg = deserialize_message(data, msg_type)
+            # Mapping based on joystick_teleop.py:
+            # Axis 0: Steer (inverted in teleop, but raw here)
+            # Axis 4: Drive (inverted in teleop)
+            # Button 4: Enable/L1
+            # Axis 2: Turbo/L2 (>= 0.9)
+            
+            # We'll store raw values and let frontend handle display logic, 
+            # OR normalize here. Let's store raw but named.
+            
+            steer = 0.0
+            throttle = 0.0
+            l1 = False
+            l2 = 0.0
+            
+            if len(msg.axes) > 0: steer = msg.axes[0]
+            if len(msg.axes) > 4: throttle = -msg.axes[4]
+            if len(msg.axes) > 2: l2 = msg.axes[2]
+            if len(msg.buttons) > 4: l1 = bool(msg.buttons[4])
+            
+            telemetry.append({
+                "time": t_sec,
+                "steer": steer,
+                "throttle": throttle,
+                "l1": l1,
+                "l2": l2
+            })
+            
+    return telemetry
 
 def generate_default_cuts(bag_path):
     reader = SequentialReader()
