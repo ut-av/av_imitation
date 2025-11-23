@@ -112,6 +112,7 @@ createApp({
         const currentBag = ref(null);
         const loadingBags = ref(false);
         const duration = ref(0);
+        const startTime = ref(0);
         const currentTime = ref(0);
         const isPlaying = ref(false);
         const description = ref("");
@@ -120,6 +121,8 @@ createApp({
 
         const timeline = ref(null);
         let playInterval = null;
+        let previewInterval = null;
+        const previewTime = ref(0);
 
         // Settings State
         const showSettings = ref(false);
@@ -171,14 +174,27 @@ createApp({
         const currentFrameUrl = computed(() => {
             if (!currentBag.value) return null;
 
+            // Determine which time to show
+            let timeToShow = currentTime.value;
+            if (bufferingProgress.value < 100 && !isPlaying.value) {
+                // Show preview loop if buffering and not playing
+                timeToShow = previewTime.value;
+            }
+
             // Try to get from cache first
-            const key = currentTime.value.toFixed(1);
+            const key = timeToShow.toFixed(1);
             if (frameCache.value.has(key)) {
                 return frameCache.value.get(key);
             }
 
             // Fallback to direct URL (will be slow/cancelled if not cached)
-            return `/api/bag/${currentBag.value}/frame/${currentTime.value.toFixed(2)}?_=${Date.now()}`;
+            return `/api/bag/${currentBag.value}/frame/${timeToShow.toFixed(2)}?_=${Date.now()}`;
+        });
+
+        const formattedCurrentTime = computed(() => {
+            if (!startTime.value) return "00:00:00";
+            const date = new Date((startTime.value + currentTime.value) * 1000);
+            return date.toLocaleString();
         });
 
         const preloadBag = async (bagName, durationSec) => {
@@ -209,8 +225,38 @@ createApp({
                 }
             }
 
-            // We'll fetch sequentially to avoid overwhelming the browser/server
+            // 2. We'll fetch integers first for preview, then the rest
+            const integers = [];
+            const fractions = [];
             for (let t = 0; t <= durationSec; t += step) {
+                if (Math.abs(t - Math.round(t)) < 0.01) {
+                    integers.push(t);
+                } else {
+                    fractions.push(t);
+                }
+            }
+
+            // Combine: integers first, then fractions
+            const allTimes = [...integers, ...fractions];
+
+            // Start preview loop
+            if (previewInterval) clearInterval(previewInterval);
+            let previewIndex = 0;
+            previewInterval = setInterval(() => {
+                if (bufferingProgress.value >= 100) {
+                    clearInterval(previewInterval);
+                    return;
+                }
+                // Cycle through integers that are loaded
+                // Actually, just cycle through 0, 1, 2... up to duration
+                // The image viewer will show what's available or try to fetch
+                // But to be smooth, we should probably only show what's loaded or just cycle integers
+
+                previewTime.value = (previewIndex % (Math.floor(durationSec) + 1));
+                previewIndex++;
+            }, 1000); // 1Hz
+
+            for (const t of allTimes) {
                 if (controller.signal.aborted) break;
 
                 const key = t.toFixed(1);
@@ -268,6 +314,7 @@ createApp({
                 const res = await fetch(`/api/bag/${bag}/info`);
                 const data = await res.json();
                 duration.value = data.info.duration;
+                startTime.value = data.info.start_time;
 
                 if (data.user_meta) {
                     description.value = data.user_meta.description || "";
@@ -408,7 +455,8 @@ createApp({
             showSettings,
             persistCache,
             cacheSizeMB,
-            clearCache
+            clearCache,
+            formattedCurrentTime
         };
     }
 }).mount('#app');

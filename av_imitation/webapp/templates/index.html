@@ -105,7 +105,10 @@
         }
 
         .viewer {
-            flex: 1;
+            flex: 0 0 auto;
+            /* Don't grow/shrink */
+            width: 320px;
+            height: 240px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -114,7 +117,8 @@
             border-radius: 8px;
             overflow: hidden;
             position: relative;
-            min-height: 400px;
+            margin: 0 auto;
+            /* Center it */
         }
 
         .viewer img {
@@ -156,6 +160,8 @@
         /* Timeline */
         .timeline-container {
             height: 100px;
+            min-height: 100px;
+            /* Prevent collapse */
             background-color: var(--surface-color);
             border-radius: 8px;
             position: relative;
@@ -289,6 +295,8 @@
             <h1>AV Imitation Annotator</h1>
             <div v-if="currentBag">
                 <span>[[ currentBag ]]</span>
+                <span style="margin-left: 1rem; color: var(--text-muted); font-size: 0.9rem;">[[ formattedCurrentTime
+                    ]]</span>
             </div>
             <button class="hamburger-btn" @click="showSettings = true">☰</button>
         </header>
