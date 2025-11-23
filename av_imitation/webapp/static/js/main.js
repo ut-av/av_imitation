@@ -229,10 +229,6 @@ createApp({
             frameCache.value.clear();
             bufferingProgress.value = 0;
 
-            const step = 0.1;
-            const totalSteps = Math.ceil(durationSec / step);
-            let loaded = 0;
-
             // 1. If persistence is ON, try to load from DB first
             if (persistCache.value) {
                 try {
@@ -242,26 +238,16 @@ createApp({
                         const url = URL.createObjectURL(frame.blob);
                         frameCache.value.set(key, url);
                     });
+                    // If we have a significant amount of frames, maybe we don't need to stream?
+                    // For now, let's stream anyway to fill gaps or ensure freshness.
+                    // Optimization: If we have > 90% frames, skip stream?
+                    // Let's keep it simple: Stream always, but maybe check existence before overwriting?
                 } catch (e) {
                     console.error("Error loading from DB", e);
                 }
             }
 
-            // 2. We'll fetch integers first for preview, then the rest
-            const integers = [];
-            const fractions = [];
-            for (let t = 0; t <= durationSec; t += step) {
-                if (Math.abs(t - Math.round(t)) < 0.01) {
-                    integers.push(t);
-                } else {
-                    fractions.push(t);
-                }
-            }
-
-            // Combine: integers first, then fractions
-            const allTimes = [...integers, ...fractions];
-
-            // Start preview loop
+            // Start preview loop (same as before)
             if (previewInterval) clearInterval(previewInterval);
             let previewIndex = 0;
             previewInterval = setInterval(() => {
@@ -269,51 +255,115 @@ createApp({
                     clearInterval(previewInterval);
                     return;
                 }
-                // Cycle through integers that are loaded
-                // Actually, just cycle through 0, 1, 2... up to duration
-                // The image viewer will show what's available or try to fetch
-                // But to be smooth, we should probably only show what's loaded or just cycle integers
-
                 previewTime.value = (previewIndex % (Math.floor(durationSec) + 1));
                 previewIndex++;
-            }, 1000); // 1Hz
+            }, 1000);
 
-            for (const t of allTimes) {
-                if (controller.signal.aborted) break;
+            try {
+                const response = await fetch(`/api/bag/${bagName}/stream_frames`, {
+                    signal: controller.signal
+                });
 
-                const key = t.toFixed(1);
-                // Skip if already cached
-                if (frameCache.value.has(key)) {
-                    loaded++;
-                    bufferingProgress.value = Math.round((loaded / totalSteps) * 100);
-                    continue;
+                if (!response.ok) {
+                    throw new Error(`Stream failed: ${response.statusText}`);
                 }
 
-                try {
-                    const res = await fetch(`/api/bag/${bagName}/frame/${t.toFixed(2)}`);
-                    if (res.ok) {
-                        const blob = await res.blob();
+                const reader = response.body.getReader();
+                let receivedLength = 0;
+                let chunks = []; // Array of Uint8Array
+
+                // We need a way to process chunks as they come.
+                // We'll maintain a "buffer" of unprocessed bytes.
+                // Since concatenating large arrays is expensive, we can just keep a list of chunks
+                // and a pointer, or use a small buffer for the header.
+
+                // Let's use a simpler approach: Append to a buffer. 
+                // Warning: This might grow large if we don't slice it.
+                // Better: Keep a "working buffer" that we slice from.
+
+                let buffer = new Uint8Array(0);
+
+                const appendBuffer = (newChunk) => {
+                    const tmp = new Uint8Array(buffer.length + newChunk.length);
+                    tmp.set(buffer, 0);
+                    tmp.set(newChunk, buffer.length);
+                    buffer = tmp;
+                };
+
+                // Estimate total size? We don't know it.
+                // We can use duration to estimate progress?
+                // Or just count frames?
+                // Let's assume 10Hz * duration = total frames.
+                // const estimatedFrames = durationSec * 10;
+                let framesLoaded = 0;
+                let totalFrames = 0;
+                let readHeader = false;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    appendBuffer(value);
+
+                    // Read Header (Total Frames)
+                    if (!readHeader) {
+                        if (buffer.length < 4) continue; // Wait for more data
+                        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+                        totalFrames = view.getUint32(0, true);
+                        buffer = buffer.slice(4);
+                        readHeader = true;
+                        // console.log("Total frames:", totalFrames);
+                    }
+
+                    // Process buffer
+                    while (true) {
+                        // Need at least 12 bytes for header (8 timestamp + 4 size)
+                        if (buffer.length < 12) break;
+
+                        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+                        const timestamp = view.getFloat64(0, true); // little-endian
+                        const size = view.getUint32(8, true);
+
+                        // Check if we have the full image
+                        if (buffer.length < 12 + size) break;
+
+                        // Extract image
+                        const imageData = buffer.slice(12, 12 + size);
+
+                        // Create Blob
+                        const blob = new Blob([imageData], { type: 'image/jpeg' });
                         const url = URL.createObjectURL(blob);
+                        const key = timestamp.toFixed(1);
+
                         frameCache.value.set(key, url);
 
-                        // Save to DB if persistence is ON
                         if (persistCache.value) {
-                            FrameDB.saveFrame(bagName, t, blob).catch(e => console.warn("Failed to save frame", e));
+                            FrameDB.saveFrame(bagName, timestamp, blob).catch(e => console.warn("Failed to save frame", e));
+                        }
+
+                        // Remove processed part from buffer
+                        buffer = buffer.slice(12 + size);
+
+                        framesLoaded++;
+                        // Update progress
+                        if (totalFrames > 0) {
+                            const progress = Math.min(100, Math.round((framesLoaded / totalFrames) * 100));
+                            bufferingProgress.value = progress;
                         }
                     }
-                } catch (e) {
-                    console.warn(`Failed to preload frame at ${t}`, e);
                 }
 
-                loaded++;
-                bufferingProgress.value = Math.round((loaded / totalSteps) * 100);
+                bufferingProgress.value = 100;
+                if (persistCache.value) {
+                    updateCacheSize();
+                }
 
-                // Yield to main thread occasionally if needed (await fetch does this mostly)
-            }
-
-            // Update size after preload
-            if (persistCache.value) {
-                updateCacheSize();
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    console.log("Stream aborted");
+                } else {
+                    console.error("Stream error", e);
+                }
             }
         };
 

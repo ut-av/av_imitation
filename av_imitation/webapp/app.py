@@ -389,6 +389,87 @@ def get_frame(bag_name, timestamp):
                 
     return "Frame not found", 404
 
+import struct
+
+@app.route('/api/bag/<bag_name>/stream_frames')
+def stream_frames(bag_name):
+    bag_path = os.path.join(BAG_DIR, bag_name)
+    
+    def generate():
+        reader = SequentialReader()
+        storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
+        converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
+        
+        try:
+            reader.open(storage_options, converter_options)
+        except Exception as e:
+            print(f"Error opening bag for stream: {e}")
+            return
+
+        metadata = reader.get_metadata()
+        start_time_ns = metadata.starting_time.nanoseconds
+        
+        # Filter for image topics
+        image_topics = []
+        total_frames = 0
+        for t in metadata.topics_with_message_count:
+            if 'image' in t.topic_metadata.name:
+                image_topics.append(t.topic_metadata.name)
+                total_frames += t.message_count
+        
+        if not image_topics:
+            return
+
+        # Send total frames as header (uint32)
+        yield struct.pack('<I', total_frames)
+
+        storage_filter = StorageFilter(topics=image_topics)
+        reader.set_filter(storage_filter)
+        
+        msg_type_image = get_message('sensor_msgs/msg/Image')
+        msg_type_compressed = get_message('sensor_msgs/msg/CompressedImage')
+
+        while reader.has_next():
+            (topic, data, t) = reader.read_next()
+            t_sec = (t - start_time_ns) / 1e9
+            
+            try:
+                jpeg_data = None
+                
+                if 'compressed' in topic:
+                    msg = deserialize_message(data, msg_type_compressed)
+                    # Already compressed? If it's jpeg, great. If png, maybe convert?
+                    # Usually compressed is jpeg.
+                    # Let's assume it's usable as is if format is jpeg
+                    if 'jpeg' in msg.format or 'jpg' in msg.format:
+                        jpeg_data = bytes(msg.data)
+                    else:
+                        # Decode and re-encode if not jpeg (e.g. png)
+                        np_arr = np.frombuffer(msg.data, np.uint8)
+                        cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                        if cv_img is not None:
+                            _, buffer = cv2.imencode('.jpg', cv_img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                            jpeg_data = buffer.tobytes()
+                else:
+                    msg = deserialize_message(data, msg_type_image)
+                    cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                    if cv_img is not None:
+                        # Resize for performance? 320x240 is small enough.
+                        # Encode to jpeg
+                        _, buffer = cv2.imencode('.jpg', cv_img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        jpeg_data = buffer.tobytes()
+                
+                if jpeg_data:
+                    # Protocol: [timestamp(double)][size(uint32)][data]
+                    header = struct.pack('<dI', t_sec, len(jpeg_data))
+                    yield header + jpeg_data
+                    
+            except Exception as e:
+                print(f"Error processing frame in stream: {e}")
+                continue
+
+    return app.response_class(generate(), mimetype='application/octet-stream')
+
 @app.route('/api/bag/<bag_name>/metadata', methods=['POST'])
 def save_metadata(bag_name):
     data = request.json

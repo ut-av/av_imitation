@@ -451,6 +451,12 @@
             background: rgba(0, 0, 0, 0.5);
             z-index: 999;
         }
+
+        .disabled {
+            opacity: 0.5;
+            pointer-events: none;
+            filter: grayscale(100%);
+        }
     </style>
 </head>
 
@@ -601,29 +607,31 @@
                     </div>
                 </div>
 
-                <div class="controls">
-                    <button @click="togglePlay" :disabled="bufferingProgress < 100"
-                        :style="{ opacity: bufferingProgress < 100 ? 0.5 : 1, cursor: bufferingProgress < 100 ? 'not-allowed' : 'pointer' }">
-                        [[ bufferingProgress < 100 ? `Buffering ${bufferingProgress}%` : (isPlaying ? 'Pause' : 'Play' )
-                            ]] </button>
-                            <button class="secondary" @click="markStart">Mark Cut Start [</button>
-                            <button class="secondary" @click="markEnd">Mark Cut End ]</button>
-                            <button class="danger" @click="clearCuts">Clear Cuts</button>
-                            <span>Time: [[ currentTime.toFixed(2) ]] / [[ duration.toFixed(2) ]] s</span>
-                </div>
-
-                <div class="timeline-container" ref="timeline" @click="seek" @mousemove="handleMouseMove">
-                    <div class="timeline-track"></div>
-                    <!-- Cut segments -->
-                    <div v-for="(cut, index) in cuts" :key="index" class="timeline-segment"
-                        :style="getSegmentStyle(cut)">
-                    </div>
-                    <!-- Active cut being drawn -->
-                    <div v-if="activeCutStart !== null" class="timeline-segment"
-                        :style="getSegmentStyle({start: activeCutStart, end: currentTime})">
+                <div :class="{ disabled: bufferingProgress < 100 }">
+                    <div class="controls">
+                        <button @click="togglePlay" :disabled="bufferingProgress < 100"
+                            :style="{ opacity: bufferingProgress < 100 ? 0.5 : 1, cursor: bufferingProgress < 100 ? 'not-allowed' : 'pointer' }">
+                            [[ bufferingProgress < 100 ? `Buffering ${bufferingProgress}%` : (isPlaying ? 'Pause'
+                                : 'Play' ) ]] </button>
+                                <button class="secondary" @click="markStart">Mark Cut Start [</button>
+                                <button class="secondary" @click="markEnd">Mark Cut End ]</button>
+                                <button class="danger" @click="clearCuts">Clear Cuts</button>
+                                <span>Time: [[ currentTime.toFixed(2) ]] / [[ duration.toFixed(2) ]] s</span>
                     </div>
 
-                    <div class="timeline-cursor" :style="{ left: (currentTime / duration * 100) + '%' }"></div>
+                    <div class="timeline-container" ref="timeline" @click="seek" @mousemove="handleMouseMove">
+                        <div class="timeline-track"></div>
+                        <!-- Cut segments -->
+                        <div v-for="(cut, index) in cuts" :key="index" class="timeline-segment"
+                            :style="getSegmentStyle(cut)">
+                        </div>
+                        <!-- Active cut being drawn -->
+                        <div v-if="activeCutStart !== null" class="timeline-segment"
+                            :style="getSegmentStyle({start: activeCutStart, end: currentTime})">
+                        </div>
+
+                        <div class="timeline-cursor" :style="{ left: (currentTime / duration * 100) + '%' }"></div>
+                    </div>
                 </div>
 
                 <div class="metadata-form">
