@@ -77,12 +77,15 @@
         }
 
         .bag-item {
-            padding: 0.75rem;
+            padding: 0.5rem;
             margin-bottom: 0.5rem;
             background-color: #2c2c2c;
             border-radius: 4px;
             cursor: pointer;
             transition: background-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .bag-item:hover {
@@ -90,8 +93,85 @@
         }
 
         .bag-item.active {
-            background-color: var(--primary-color);
-            color: #000;
+            background-color: #333;
+            /* Darker background for active, but keep text readable */
+            border: 1px solid var(--primary-color);
+        }
+
+        .bag-thumbnail {
+            width: 60px;
+            height: 45px;
+            background-color: #000;
+            flex-shrink: 0;
+            overflow: hidden;
+            border-radius: 2px;
+        }
+
+        .bag-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .bag-info {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .bag-meta-line {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 2px;
+        }
+
+        .bag-name-full {
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 0.95rem;
+            margin-bottom: 4px;
+        }
+
+        .bag-date {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .bag-duration {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .bag-sparkline {
+            height: 15px;
+            width: 100%;
+            opacity: 0.9;
+            border-radius: 2px;
+            overflow: hidden;
+            background-color: #222;
+        }
+
+        .delete-btn {
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            padding: 0.2rem;
+            font-size: 1rem;
+            opacity: 0;
+            transition: opacity 0.2s, color 0.2s;
+        }
+
+        .bag-item:hover .delete-btn {
+            opacity: 1;
+        }
+
+        .delete-btn:hover {
+            color: var(--error-color);
         }
 
         /* Editor Area */
@@ -305,9 +385,52 @@
                 <h3>Bag Files</h3>
                 <div v-if="loadingBags" class="loading">Loading...</div>
                 <ul class="bag-list">
-                    <li v-for="bag in bags" :key="bag" class="bag-item" :class="{ active: currentBag === bag }"
-                        @click="selectBag(bag)">
-                        [[ bag ]]
+                    <li v-for="bag in bags" :key="bag.name" class="bag-item"
+                        :class="{ active: currentBag === bag.name }" @click="selectBag(bag)"
+                        :title="bag.description || 'No description'">
+
+                        <!-- Thumbnail -->
+                        <div class="bag-thumbnail">
+                            <img :src="`/api/bag/${bag.name}/frame/0.0`" loading="lazy" alt="preview">
+                        </div>
+
+                        <!-- Info -->
+                        <div class="bag-info">
+                            <!-- Line 1: Parsed Date + Duration -->
+                            <div class="bag-meta-line">
+                                <span class="bag-date">[[ formatBagDate(bag) ]]</span>
+                                <span class="bag-duration" v-if="bag.duration">[[ bag.duration.toFixed(1) ]]s</span>
+                            </div>
+
+                            <!-- Line 2: Full Bag Name -->
+                            <div class="bag-name-full">[[ bag.name ]]</div>
+
+                            <!-- Line 3: Sparkline -->
+                            <div class="bag-sparkline">
+                                <!-- Red Cuts Visualization -->
+                                <svg width="100%" height="15" preserveAspectRatio="none"
+                                    v-if="bag.cuts && bag.cuts.length > 0">
+                                    <!-- Background (Green/Recording) -->
+                                    <rect x="0" y="0" width="100%" height="100%" fill="#4caf50" opacity="0.8" />
+
+                                    <!-- Cuts (Red/Deleted) -->
+                                    <rect v-for="cut in bag.cuts" :x="(cut.start / bag.duration) * 100 + '%'" y="0"
+                                        :width="((cut.end - cut.start) / bag.duration) * 100 + '%'" height="100%"
+                                        fill="#cf6679" />
+                                </svg>
+
+                                <!-- Fallback line if no cuts but duration exists -->
+                                <svg width="100%" height="15" preserveAspectRatio="none" v-else-if="bag.duration">
+                                    <line x1="0" y1="7.5" x2="100%" y2="7.5" stroke="#444" stroke-width="2"
+                                        stroke-dasharray="4" />
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Actions -->
+                        <button class="delete-btn" @click.stop="deleteBag(bag)" title="Delete Bag">
+                            🗑️
+                        </button>
                     </li>
                 </ul>
             </div>

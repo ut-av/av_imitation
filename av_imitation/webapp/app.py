@@ -47,20 +47,85 @@ def index():
 @app.route('/api/bags')
 def list_bags():
     bags = []
-    # Look for both .mcap and .db3 (sqlite3)
-    # For sqlite3, the bag is a directory or a file ending in .db3
-    # We'll assume standard ros2 bag folder structure: bag_name/bag_name_0.db3
-    # So we list directories in BAG_DIR
     if not os.path.exists(BAG_DIR):
         os.makedirs(BAG_DIR)
     
     for item in os.listdir(BAG_DIR):
         path = os.path.join(BAG_DIR, item)
         if os.path.isdir(path):
-            # Check if it contains a db3 or mcap
             if glob.glob(os.path.join(path, "*.db3")) or glob.glob(os.path.join(path, "*.mcap")):
-                bags.append(item)
+                # Get metadata if available
+                meta_path = os.path.join(PROCESSED_DIR, f"{item}.json")
+                bag_data = {
+                    "name": item,
+                    "description": "",
+                    "cuts": [],
+                    "duration": 0
+                }
+                
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, 'r') as f:
+                            user_meta = json.load(f)
+                            bag_data.update(user_meta)
+                    except:
+                        pass
+                
+                # If duration or start_time is missing, try to read metadata.yaml
+                if bag_data["duration"] == 0 or "start_time" not in bag_data:
+                    try:
+                        import yaml
+                        meta_yaml_path = os.path.join(path, "metadata.yaml")
+                        if os.path.exists(meta_yaml_path):
+                            with open(meta_yaml_path, 'r') as f:
+                                meta_yaml = yaml.safe_load(f)
+                                # Structure: rosbag2_bagfile_information: duration: nanoseconds: ...
+                                duration_ns = meta_yaml['rosbag2_bagfile_information']['duration']['nanoseconds']
+                                start_time_ns = meta_yaml['rosbag2_bagfile_information']['starting_time']['nanoseconds_since_epoch']
+                                
+                                if bag_data["duration"] == 0:
+                                    bag_data["duration"] = duration_ns / 1e9
+                                if "start_time" not in bag_data:
+                                    bag_data["start_time"] = start_time_ns / 1e9
+                    except Exception as e:
+                        print(f"Error reading metadata.yaml for {item}: {e}")
+
+                # If cuts are missing, generate them and cache them
+                if not bag_data["cuts"]:
+                     # Only generate if we have a valid bag path
+                     try:
+                         cuts = generate_default_cuts(path)
+                         if cuts:
+                             bag_data["cuts"] = cuts
+                             # Cache it immediately
+                             if not os.path.exists(PROCESSED_DIR):
+                                 os.makedirs(PROCESSED_DIR)
+                             with open(meta_path, 'w') as f:
+                                 json.dump(bag_data, f, indent=2)
+                     except Exception as e:
+                         print(f"Error generating default cuts for {item}: {e}")
+                
+                bags.append(bag_data)
+                
     return jsonify(bags)
+
+@app.route('/api/bag/<bag_name>', methods=['DELETE'])
+def delete_bag(bag_name):
+    bag_path = os.path.join(BAG_DIR, bag_name)
+    meta_path = os.path.join(PROCESSED_DIR, f"{bag_name}.json")
+    
+    try:
+        if os.path.exists(bag_path):
+            import shutil
+            shutil.rmtree(bag_path)
+            
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+            
+        return jsonify({"status": "success"})
+    except Exception as e:
+        print(f"Error deleting bag {bag_name}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/bag/<bag_name>/info')
 def bag_info(bag_name):
@@ -106,8 +171,8 @@ def generate_default_cuts(bag_path):
     if not joy_topic:
         return []
 
-    # storage_filter = StorageFilter(topics=[joy_topic])
-    # reader.set_filter(storage_filter) # If supported
+    storage_filter = StorageFilter(topics=[joy_topic])
+    reader.set_filter(storage_filter)
 
     cuts = []
     current_cut_start = None
@@ -148,6 +213,9 @@ def generate_default_cuts(bag_path):
     
     # If we ended with a cut open, close it at the end
     if current_cut_start is not None:
+        # If last_time is 0 (no messages?), use duration if possible, or just 0
+        if last_time == 0:
+             last_time = metadata.duration.nanoseconds / 1e9
         cuts.append({"start": current_cut_start, "end": last_time})
         
     return cuts

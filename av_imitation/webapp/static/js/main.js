@@ -82,6 +82,27 @@ const FrameDB = {
         });
     },
 
+    async clearBag(bag) {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            const index = store.index('bag');
+            const request = index.openKeyCursor(IDBKeyRange.only(bag));
+
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (cursor) {
+                    store.delete(cursor.primaryKey);
+                    cursor.continue();
+                } else {
+                    resolve();
+                }
+            };
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
     async getSize() {
         if (!this.db) await this.init();
         return new Promise((resolve, reject) => {
@@ -296,7 +317,8 @@ createApp({
         };
 
         const selectBag = async (bag) => {
-            currentBag.value = bag;
+            // bag is now an object
+            currentBag.value = bag.name;
             currentTime.value = 0;
             isPlaying.value = false;
             cuts.value = [];
@@ -311,7 +333,7 @@ createApp({
             bufferingProgress.value = 0;
 
             try {
-                const res = await fetch(`/api/bag/${bag}/info`);
+                const res = await fetch(`/api/bag/${bag.name}/info`);
                 const data = await res.json();
                 duration.value = data.info.duration;
                 startTime.value = data.info.start_time;
@@ -322,11 +344,87 @@ createApp({
                 }
 
                 // Start preloading
-                preloadBag(bag, duration.value);
+                preloadBag(bag.name, duration.value);
 
             } catch (e) {
                 console.error("Failed to load bag info", e);
             }
+        };
+
+        const deleteBag = async (bag) => {
+            if (confirm(`Are you sure you want to delete ${bag.name}? This cannot be undone.`)) {
+                try {
+                    // Clear cache first
+                    await FrameDB.clearBag(bag.name); // Need to implement clearBag in FrameDB or just clear all? 
+                    // Actually FrameDB doesn't have clearBag yet. Let's add it or just ignore for now as it will be orphaned.
+                    // Better to clean up.
+
+                    const res = await fetch(`/api/bag/${bag.name}`, { method: 'DELETE' });
+                    if (res.ok) {
+                        // Remove from list
+                        bags.value = bags.value.filter(b => b.name !== bag.name);
+                        if (currentBag.value === bag.name) {
+                            currentBag.value = null;
+                        }
+                    } else {
+                        alert("Failed to delete bag");
+                    }
+                } catch (e) {
+                    console.error("Error deleting bag", e);
+                    alert("Error deleting bag");
+                }
+            }
+        };
+
+        const getSparklinePoints = (bag) => {
+            if (!bag.duration || !bag.cuts || bag.cuts.length === 0) return "";
+
+            // Generate points for SVG polyline
+            // We want a line that is high when "recording" (L1 pressed) and low when "cut" (L1 not pressed)
+            // Wait, the requirement says "cuts from the joystick L1 button".
+            // Usually "cuts" means the parts we KEEP or the parts we REMOVE?
+            // In the code: "If L1 is pressed, we are 'recording'. If we were in a cut, close it."
+            // So `cuts` array seems to store the intervals where L1 was NOT pressed (or maybe the other way around?)
+            // Let's re-read `generate_default_cuts` in app.py.
+            // "If L1 is pressed, we are 'recording'... if current_cut_start is not None: cuts.append..."
+            // So `cuts` are the intervals where L1 was PRESSED? No.
+            // "L1 not pressed. We should be in a cut. if current_cut_start is None: current_cut_start = t_sec"
+            // So `cuts` are the intervals where L1 is NOT pressed.
+            // So we want the line to be LOW during `cuts` and HIGH otherwise.
+
+            const width = 100;
+            const height = 20;
+            const points = [];
+
+            // Start high (recording) by default? Or low?
+            // "If the bag starts and L1 is NOT held, we start a cut at 0" -> Low
+            // Let's assume High (recording) is the baseline state we want to visualize as "active".
+
+            let currentX = 0;
+
+            // Sort cuts just in case
+            const sortedCuts = [...bag.cuts].sort((a, b) => a.start - b.start);
+
+            points.push(`0,0`); // Start top-left (High)
+
+            sortedCuts.forEach(cut => {
+                const startX = (cut.start / bag.duration) * width;
+                const endX = (cut.end / bag.duration) * width;
+
+                // Line stays high until start of cut
+                points.push(`${startX},0`);
+                // Drop to low
+                points.push(`${startX},${height}`);
+                // Stay low until end of cut
+                points.push(`${endX},${height}`);
+                // Go back high
+                points.push(`${endX},0`);
+            });
+
+            // Finish at end
+            points.push(`${width},0`);
+
+            return points.join(" ");
         };
 
         const togglePlay = () => {
@@ -395,7 +493,9 @@ createApp({
             const metadata = {
                 bag_name: currentBag.value,
                 description: description.value,
-                cuts: cuts.value
+                cuts: cuts.value,
+                duration: duration.value, // Save duration too for list view
+                start_time: startTime.value // Save start_time for list view
             };
 
             try {
@@ -405,6 +505,16 @@ createApp({
                     body: JSON.stringify(metadata)
                 });
                 alert('Metadata saved!');
+
+                // Update local bag list item
+                const bagIndex = bags.value.findIndex(b => b.name === currentBag.value);
+                if (bagIndex !== -1) {
+                    bags.value[bagIndex].description = description.value;
+                    bags.value[bagIndex].cuts = cuts.value;
+                    bags.value[bagIndex].duration = duration.value;
+                    bags.value[bagIndex].start_time = startTime.value;
+                }
+
             } catch (e) {
                 console.error("Failed to save metadata", e);
                 alert('Failed to save metadata');
@@ -456,7 +566,37 @@ createApp({
             persistCache,
             cacheSizeMB,
             clearCache,
-            formattedCurrentTime
+            formattedCurrentTime,
+            // New Features
+            deleteBag,
+            getSparklinePoints,
+            formatBagDate: (bag) => {
+                // If bag is an object with start_time, use it
+                if (bag.start_time) {
+                    const date = new Date(bag.start_time * 1000);
+                    if (!isNaN(date.getTime())) {
+                        return date.toLocaleString();
+                    }
+                }
+
+                // Fallback to parsing filename
+                const bagName = bag.name || bag;
+                // Expects roboracer_YYYY_MM_DD_HH_MM_SS
+                const parts = bagName.split('_');
+                if (parts.length >= 7 && parts[0] === 'roboracer') {
+                    const year = parts[1];
+                    const month = parts[2];
+                    const day = parts[3];
+                    const hour = parts[4];
+                    const minute = parts[5];
+                    const second = parts[6];
+                    const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`);
+                    if (!isNaN(date.getTime())) {
+                        return date.toLocaleString();
+                    }
+                }
+                return bagName;
+            }
         };
     }
 }).mount('#app');
