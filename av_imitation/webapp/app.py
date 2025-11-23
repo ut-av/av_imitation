@@ -30,10 +30,16 @@ def get_bag_info(bag_path):
     try:
         reader.open(storage_options, converter_options)
         metadata = reader.get_metadata()
+        image_count = 0
+        for t in metadata.topics_with_message_count:
+            if 'image' in t.topic_metadata.name:
+                image_count += t.message_count
+
         return {
             "duration": metadata.duration.nanoseconds / 1e9,
             "start_time": metadata.starting_time.nanoseconds / 1e9,
             "message_count": metadata.message_count,
+            "image_count": image_count,
             "topics": [t.topic_metadata.name for t in metadata.topics_with_message_count]
         }
     except Exception as e:

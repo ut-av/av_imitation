@@ -36,7 +36,7 @@ const FrameDB = {
         return new Promise((resolve, reject) => {
             const tx = this.db.transaction([this.storeName], 'readwrite');
             const store = tx.objectStore(this.storeName);
-            const id = `${bag}_${timestamp.toFixed(2)}`;
+            const id = `${bag}_${timestamp.toFixed(3)}`;
             const request = store.put({ id, bag, timestamp, blob });
 
             request.onsuccess = () => resolve();
@@ -49,7 +49,7 @@ const FrameDB = {
         return new Promise((resolve, reject) => {
             const tx = this.db.transaction([this.storeName], 'readonly');
             const store = tx.objectStore(this.storeName);
-            const id = `${bag}_${timestamp.toFixed(2)}`;
+            const id = `${bag}_${timestamp.toFixed(3)}`;
             const request = store.get(id);
 
             request.onsuccess = () => resolve(request.result ? request.result.blob : null);
@@ -201,7 +201,8 @@ createApp({
             }
         });
 
-        const frameCache = ref(new Map()); // Key: timestamp.toFixed(1), Value: blobUrl
+        const frameCache = ref(new Map()); // Key: timestamp.toFixed(3), Value: blobUrl
+        const frameTimestamps = ref([]); // Sorted array of timestamps
         const preloadController = ref(null);
         const bufferingProgress = ref(0);
 
@@ -215,8 +216,43 @@ createApp({
                 timeToShow = previewTime.value;
             }
 
-            // Try to get from cache first
-            const key = timeToShow.toFixed(1);
+            // Find nearest timestamp in cache
+            // Since frameTimestamps is sorted, we can use binary search or just find closest
+            // For now, simple iteration or find is okay if array isn't huge, but binary search is better.
+            // Let's just find the closest one.
+
+            if (frameTimestamps.value.length === 0) return null;
+
+            // Simple linear search for nearest (optimization: binary search)
+            // Or just use the one that matches toFixed(1) if we want to be loose?
+            // No, we want precise lookup.
+
+            // Optimization: Binary search
+            let l = 0, r = frameTimestamps.value.length - 1;
+            let closest = frameTimestamps.value[0];
+            let minDiff = Math.abs(timeToShow - closest);
+
+            while (l <= r) {
+                const m = Math.floor((l + r) / 2);
+                const val = frameTimestamps.value[m];
+                const diff = Math.abs(timeToShow - val);
+
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closest = val;
+                }
+
+                if (val < timeToShow) {
+                    l = m + 1;
+                } else {
+                    r = m - 1;
+                }
+            }
+
+            // If the closest frame is too far away (e.g. > 0.2s), maybe don't show it?
+            // But for "nearest neighbor" playback, we usually want to show it.
+
+            const key = closest.toFixed(3);
             if (frameCache.value.has(key)) {
                 return frameCache.value.get(key);
             }
@@ -231,7 +267,7 @@ createApp({
             return date.toLocaleString();
         });
 
-        const preloadBag = async (bagName, durationSec) => {
+        const preloadBag = async (bagName, durationSec, expectedFrames) => {
             if (preloadController.value) {
                 preloadController.value.abort();
             }
@@ -239,6 +275,7 @@ createApp({
             preloadController.value = controller;
 
             frameCache.value.clear();
+            frameTimestamps.value = [];
             bufferingProgress.value = 0;
 
             // 1. If persistence is ON, try to load from DB first
@@ -246,14 +283,23 @@ createApp({
                 try {
                     const cachedFrames = await FrameDB.getFramesForBag(bagName);
                     cachedFrames.forEach(frame => {
-                        const key = frame.timestamp.toFixed(1);
+                        const key = frame.timestamp.toFixed(3);
                         const url = URL.createObjectURL(frame.blob);
                         frameCache.value.set(key, url);
+                        frameTimestamps.value.push(frame.timestamp);
                     });
-                    // If we have a significant amount of frames, maybe we don't need to stream?
-                    // For now, let's stream anyway to fill gaps or ensure freshness.
-                    // Optimization: If we have > 90% frames, skip stream?
-                    // Let's keep it simple: Stream always, but maybe check existence before overwriting?
+
+                    frameTimestamps.value.sort((a, b) => a - b);
+
+                    // Check if we have enough frames to skip streaming
+                    // Use exact expectedFrames if provided
+                    if (expectedFrames && frameCache.value.size >= expectedFrames * 0.95) {
+                        console.log(`Loaded ${frameCache.value.size} frames from cache (expected ~${expectedFrames}). Skipping stream.`);
+                        bufferingProgress.value = 100;
+                        loadingBags.value = false; // Just in case
+                        return;
+                    }
+
                 } catch (e) {
                     console.error("Error loading from DB", e);
                 }
@@ -345,9 +391,13 @@ createApp({
                         // Create Blob
                         const blob = new Blob([imageData], { type: 'image/jpeg' });
                         const url = URL.createObjectURL(blob);
-                        const key = timestamp.toFixed(1);
+                        const key = timestamp.toFixed(3);
 
                         frameCache.value.set(key, url);
+                        frameTimestamps.value.push(timestamp);
+                        // Keep sorted? Or sort at end? 
+                        // Sorting every frame is slow. 
+                        // Since stream is sequential, we can just push.
 
                         if (persistCache.value) {
                             FrameDB.saveFrame(bagName, timestamp, blob).catch(e => console.warn("Failed to save frame", e));
@@ -364,6 +414,9 @@ createApp({
                         }
                     }
                 }
+
+                // Sort timestamps after streaming
+                frameTimestamps.value.sort((a, b) => a - b);
 
                 bufferingProgress.value = 100;
                 if (persistCache.value) {
@@ -615,7 +668,9 @@ createApp({
                 }
 
                 // Start preloading
-                preloadBag(bag.name, duration.value);
+                // Pass image_count if available, otherwise fallback to duration estimation
+                const imageCount = data.info.image_count || Math.ceil(duration.value * 10);
+                preloadBag(bag.name, duration.value, imageCount);
 
             } catch (e) {
                 console.error("Failed to load bag info", e);
