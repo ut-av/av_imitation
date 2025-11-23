@@ -214,6 +214,72 @@
             color: var(--text-muted);
             font-style: italic;
         }
+
+        /* Settings Panel */
+        .settings-panel {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 300px;
+            background-color: var(--surface-color);
+            border-left: 1px solid #333;
+            padding: 2rem;
+            z-index: 1000;
+            box-shadow: -4px 0 10px rgba(0, 0, 0, 0.5);
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+        }
+
+        .settings-panel.open {
+            transform: translateX(0);
+        }
+
+        .settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: var(--text-color);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0.5rem;
+        }
+
+        .setting-item {
+            margin-bottom: 1.5rem;
+        }
+
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+        }
+
+        .hamburger-btn {
+            background: none;
+            border: none;
+            color: var(--text-color);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0.5rem;
+        }
+
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+        }
     </style>
 </head>
 
@@ -224,6 +290,7 @@
             <div v-if="currentBag">
                 <span>[[ currentBag ]]</span>
             </div>
+            <button class="hamburger-btn" @click="showSettings = true">☰</button>
         </header>
         <main>
             <div class="sidebar">
@@ -285,6 +352,37 @@
                 <div style="margin: auto; color: var(--text-muted);">Select a bag file to begin</div>
             </div>
         </main>
+        </main>
+
+        <!-- Settings Panel -->
+        <div class="overlay" v-if="showSettings" @click="showSettings = false"></div>
+        <div class="settings-panel" :class="{ open: showSettings }">
+            <div class="settings-header">
+                <h2>Settings</h2>
+                <button class="close-btn" @click="showSettings = false">×</button>
+            </div>
+
+            <div class="setting-item">
+                <h3>Caching</h3>
+                <div class="setting-row">
+                    <label for="persist-toggle">Persist Cache</label>
+                    <input type="checkbox" id="persist-toggle" v-model="persistCache">
+                </div>
+                <p class="text-muted" style="font-size: 0.8rem; color: #aaa;">
+                    Save frames to browser storage to avoid re-downloading.
+                </p>
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-row">
+                    <span>Cache Size:</span>
+                    <span>[[ cacheSizeMB ]] MB</span>
+                </div>
+                <button class="danger" @click="clearCache" style="width: 100%; margin-top: 0.5rem;">
+                    Clear Cache
+                </button>
+            </div>
+        </div>
     </div>
     <script src="/static/js/main.js"></script>
 </body>

@@ -1,5 +1,108 @@
 const { createApp, ref, computed, onMounted, watch } = Vue;
 
+// IndexedDB Helper
+const FrameDB = {
+    dbName: 'AVImitationDB',
+    storeName: 'frames',
+    version: 1,
+    db: null,
+
+    async init() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, this.version);
+
+            request.onerror = (event) => {
+                console.error("IndexedDB error:", event.target.error);
+                reject(event.target.error);
+            };
+
+            request.onsuccess = (event) => {
+                this.db = event.target.result;
+                resolve(this.db);
+            };
+
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    const store = db.createObjectStore(this.storeName, { keyPath: 'id' });
+                    store.createIndex('bag', 'bag', { unique: false });
+                }
+            };
+        });
+    },
+
+    async saveFrame(bag, timestamp, blob) {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            const id = `${bag}_${timestamp.toFixed(2)}`;
+            const request = store.put({ id, bag, timestamp, blob });
+
+            request.onsuccess = () => resolve();
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
+    async getFrame(bag, timestamp) {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const id = `${bag}_${timestamp.toFixed(2)}`;
+            const request = store.get(id);
+
+            request.onsuccess = () => resolve(request.result ? request.result.blob : null);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
+    async getFramesForBag(bag) {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const index = store.index('bag');
+            const request = index.getAll(IDBKeyRange.only(bag));
+
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
+    async clear() {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readwrite');
+            const store = tx.objectStore(this.storeName);
+            const request = store.clear();
+
+            request.onsuccess = () => resolve();
+            request.onerror = (e) => reject(e.target.error);
+        });
+    },
+
+    async getSize() {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const tx = this.db.transaction([this.storeName], 'readonly');
+            const store = tx.objectStore(this.storeName);
+            const request = store.getAll(); // This might be heavy for large DBs, but simple for now
+
+            request.onsuccess = () => {
+                let size = 0;
+                if (request.result) {
+                    request.result.forEach(item => {
+                        if (item.blob) size += item.blob.size;
+                    });
+                }
+                resolve(size);
+            };
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+};
+
 createApp({
     compilerOptions: {
         delimiters: ['[[', ']]']
@@ -18,10 +121,40 @@ createApp({
         const timeline = ref(null);
         let playInterval = null;
 
+        // Settings State
+        const showSettings = ref(false);
+        const persistCache = ref(localStorage.getItem('persistCache') === 'true');
+        const cacheSize = ref(0);
+
+        const cacheSizeMB = computed(() => (cacheSize.value / (1024 * 1024)).toFixed(2));
+
+        watch(persistCache, (newVal) => {
+            localStorage.setItem('persistCache', newVal);
+        });
+
+        const updateCacheSize = async () => {
+            try {
+                cacheSize.value = await FrameDB.getSize();
+            } catch (e) {
+                console.error("Failed to get cache size", e);
+            }
+        };
+
+        const clearCache = async () => {
+            if (confirm("Are you sure you want to clear the cache?")) {
+                await FrameDB.clear();
+                await updateCacheSize();
+                // Also clear memory cache if we are clearing everything
+                frameCache.value.clear();
+            }
+        };
+
         // Fetch bags on mount
         onMounted(async () => {
             loadingBags.value = true;
             try {
+                await FrameDB.init();
+                await updateCacheSize();
                 const res = await fetch('/api/bags');
                 bags.value = await res.json();
             } catch (e) {
@@ -62,13 +195,31 @@ createApp({
             const totalSteps = Math.ceil(durationSec / step);
             let loaded = 0;
 
+            // 1. If persistence is ON, try to load from DB first
+            if (persistCache.value) {
+                try {
+                    const cachedFrames = await FrameDB.getFramesForBag(bagName);
+                    cachedFrames.forEach(frame => {
+                        const key = frame.timestamp.toFixed(1);
+                        const url = URL.createObjectURL(frame.blob);
+                        frameCache.value.set(key, url);
+                    });
+                } catch (e) {
+                    console.error("Error loading from DB", e);
+                }
+            }
+
             // We'll fetch sequentially to avoid overwhelming the browser/server
             for (let t = 0; t <= durationSec; t += step) {
                 if (controller.signal.aborted) break;
 
                 const key = t.toFixed(1);
-                // Skip if already cached (though we cleared it)
-                if (frameCache.value.has(key)) continue;
+                // Skip if already cached
+                if (frameCache.value.has(key)) {
+                    loaded++;
+                    bufferingProgress.value = Math.round((loaded / totalSteps) * 100);
+                    continue;
+                }
 
                 try {
                     const res = await fetch(`/api/bag/${bagName}/frame/${t.toFixed(2)}`);
@@ -76,6 +227,11 @@ createApp({
                         const blob = await res.blob();
                         const url = URL.createObjectURL(blob);
                         frameCache.value.set(key, url);
+
+                        // Save to DB if persistence is ON
+                        if (persistCache.value) {
+                            FrameDB.saveFrame(bagName, t, blob).catch(e => console.warn("Failed to save frame", e));
+                        }
                     }
                 } catch (e) {
                     console.warn(`Failed to preload frame at ${t}`, e);
@@ -85,6 +241,11 @@ createApp({
                 bufferingProgress.value = Math.round((loaded / totalSteps) * 100);
 
                 // Yield to main thread occasionally if needed (await fetch does this mostly)
+            }
+
+            // Update size after preload
+            if (persistCache.value) {
+                updateCacheSize();
             }
         };
 
@@ -242,9 +403,12 @@ createApp({
             markEnd,
             clearCuts,
             getSegmentStyle,
-            saveMetadata
+            saveMetadata,
+            // New Settings
+            showSettings,
+            persistCache,
+            cacheSizeMB,
+            clearCache
         };
     }
 }).mount('#app');
-
-
