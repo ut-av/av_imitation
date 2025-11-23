@@ -321,7 +321,7 @@ createApp({
 
         const currentTelemetry = computed(() => {
             if (!telemetry.value || telemetry.value.length === 0) {
-                return { steer: 0, throttle: 0, l1: false, l2: 0 };
+                return { steer: 0, throttle: 0, l1: false, l2: 0, velocity: 0, curvature: 0 };
             }
 
             // Find closest telemetry point
@@ -349,7 +349,7 @@ createApp({
                 }
             }
 
-            return telemetry.value[idx] || { steer: 0, throttle: 0, l1: false, l2: 0 };
+            return telemetry.value[idx] || { steer: 0, throttle: 0, l1: false, l2: 0, velocity: 0, curvature: 0 };
         });
 
         const getBarStyle = (val) => {

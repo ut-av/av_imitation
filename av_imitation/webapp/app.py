@@ -170,6 +170,8 @@ def bag_info(bag_name):
 
     return jsonify({"info": info, "user_meta": user_meta, "telemetry": telemetry})
 
+from amrl_msgs.msg import AckermannCurvatureDriveMsg
+
 def extract_telemetry(bag_path):
     reader = SequentialReader()
     storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
@@ -182,52 +184,63 @@ def extract_telemetry(bag_path):
 
     metadata = reader.get_metadata()
     joy_topic = None
+    ackermann_topic = None
+    
     for t in metadata.topics_with_message_count:
         if 'joy' in t.topic_metadata.name:
             joy_topic = t.topic_metadata.name
-            break
-    
-    if not joy_topic:
+        if 'ackermann_curvature_drive' in t.topic_metadata.name:
+            ackermann_topic = t.topic_metadata.name
+            
+    if not joy_topic and not ackermann_topic:
         return []
 
-    storage_filter = StorageFilter(topics=[joy_topic])
+    topics_to_filter = []
+    if joy_topic: topics_to_filter.append(joy_topic)
+    if ackermann_topic: topics_to_filter.append(ackermann_topic)
+
+    storage_filter = StorageFilter(topics=topics_to_filter)
     reader.set_filter(storage_filter)
 
     telemetry = []
-    msg_type = get_message('sensor_msgs/msg/Joy')
+    joy_msg_type = get_message('sensor_msgs/msg/Joy')
+    ack_msg_type = get_message('amrl_msgs/msg/AckermannCurvatureDriveMsg')
+    
+    # State
+    current_state = {
+        "steer": 0.0,
+        "throttle": 0.0,
+        "l1": False,
+        "l2": 0.0,
+        "velocity": 0.0,
+        "curvature": 0.0
+    }
     
     while reader.has_next():
         (topic, data, t) = reader.read_next()
         t_sec = (t - metadata.starting_time.nanoseconds) / 1e9
         
+        updated = False
+        
         if topic == joy_topic:
-            msg = deserialize_message(data, msg_type)
-            # Mapping based on joystick_teleop.py:
-            # Axis 0: Steer (inverted in teleop, but raw here)
-            # Axis 4: Drive (inverted in teleop)
-            # Button 4: Enable/L1
-            # Axis 2: Turbo/L2 (>= 0.9)
+            msg = deserialize_message(data, joy_msg_type)
+            if len(msg.axes) > 0: current_state["steer"] = msg.axes[0]
+            if len(msg.axes) > 4: current_state["throttle"] = -msg.axes[4]
+            if len(msg.axes) > 2: current_state["l2"] = msg.axes[2]
+            if len(msg.buttons) > 4: current_state["l1"] = bool(msg.buttons[4])
+            updated = True
             
-            # We'll store raw values and let frontend handle display logic, 
-            # OR normalize here. Let's store raw but named.
+        elif topic == ackermann_topic:
+            msg = deserialize_message(data, ack_msg_type)
+            current_state["velocity"] = msg.velocity
+            current_state["curvature"] = msg.curvature
+            updated = True
             
-            steer = 0.0
-            throttle = 0.0
-            l1 = False
-            l2 = 0.0
-            
-            if len(msg.axes) > 0: steer = msg.axes[0]
-            if len(msg.axes) > 4: throttle = -msg.axes[4]
-            if len(msg.axes) > 2: l2 = msg.axes[2]
-            if len(msg.buttons) > 4: l1 = bool(msg.buttons[4])
-            
-            telemetry.append({
-                "time": t_sec,
-                "steer": steer,
-                "throttle": throttle,
-                "l1": l1,
-                "l2": l2
-            })
+        if updated:
+            # Append a copy of current state
+            entry = current_state.copy()
+            entry["time"] = t_sec
+            telemetry.append(entry)
             
     return telemetry
 
