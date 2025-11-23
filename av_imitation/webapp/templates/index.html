@@ -323,15 +323,76 @@
         }
 
         /* Timeline */
-        .timeline-container {
-            height: 100px;
-            min-height: 100px;
-            /* Prevent collapse */
+        .timeline-wrapper {
+            margin-top: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .timeline-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .zoom-btn {
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.8rem;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .zoom-btn:hover {
+            background-color: #444;
+        }
+
+        .zoom-btn.active {
+            background-color: var(--primary-color);
+            color: #000;
+        }
+
+        .timeline-scroll-container {
+            height: 120px;
+            min-height: 120px;
             background-color: var(--surface-color);
             border-radius: 8px;
             position: relative;
-            cursor: pointer;
-            margin-top: auto;
+            overflow-x: auto;
+            overflow-y: hidden;
+            border: 1px solid #333;
+        }
+
+        /* Custom scrollbar */
+        .timeline-scroll-container::-webkit-scrollbar {
+            height: 8px;
+        }
+
+        .timeline-scroll-container::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        .timeline-scroll-container::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 4px;
+        }
+
+        .timeline-scroll-container::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        .timeline-content {
+            position: relative;
+            height: 100%;
+            /* Width will be set dynamically via JS */
         }
 
         .timeline-track {
@@ -347,20 +408,94 @@
         .timeline-segment {
             position: absolute;
             top: 20%;
-            bottom: 20%;
+            bottom: 40%;
+            /* Leave space for ticks */
             background-color: var(--error-color);
-            opacity: 0.5;
+            opacity: 0.6;
             pointer-events: none;
+            /* Allow clicking through to track? No, we need to click handles */
+            pointer-events: auto;
+        }
+
+        .timeline-segment.selected {
+            border: 1px solid #fff;
+            opacity: 0.8;
+            z-index: 5;
+        }
+
+        .segment-handle {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 10px;
+            cursor: col-resize;
+            z-index: 10;
+            opacity: 0;
+            /* Invisible but clickable, or visible on hover/select */
+            transition: opacity 0.2s;
+        }
+
+        .segment-handle:hover,
+        .timeline-segment.selected .segment-handle {
+            opacity: 1;
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .segment-handle.start {
+            left: 0;
+            transform: translateX(-50%);
+        }
+
+        .segment-handle.end {
+            right: 0;
+            transform: translateX(50%);
+        }
+
+        .segment-handle.active {
+            background-color: #fff;
+            opacity: 1;
         }
 
         .timeline-cursor {
             position: absolute;
             top: 0;
-            bottom: 0;
+            bottom: 20px;
+            /* Stop above ticks */
             width: 2px;
             background-color: #fff;
             pointer-events: none;
-            z-index: 10;
+            z-index: 20;
+        }
+
+        .timeline-ticks {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 20px;
+            pointer-events: none;
+        }
+
+        .tick {
+            position: absolute;
+            bottom: 0;
+            width: 1px;
+            background-color: #666;
+            height: 5px;
+        }
+
+        .tick.major {
+            height: 10px;
+            background-color: #999;
+        }
+
+        .tick-label {
+            position: absolute;
+            bottom: 12px;
+            transform: translateX(-50%);
+            font-size: 0.7rem;
+            color: #999;
+            white-space: nowrap;
         }
 
         /* Metadata Form */
@@ -616,21 +751,64 @@
                                 <button class="secondary" @click="markStart">Mark Cut Start [</button>
                                 <button class="secondary" @click="markEnd">Mark Cut End ]</button>
                                 <button class="danger" @click="clearCuts">Clear Cuts</button>
+                                <button class="secondary" @click="resetCuts"
+                                    title="Reset to original L1 cuts">Reset</button>
                                 <span>Time: [[ currentTime.toFixed(2) ]] / [[ duration.toFixed(2) ]] s</span>
                     </div>
 
-                    <div class="timeline-container" ref="timeline" @click="seek" @mousemove="handleMouseMove">
-                        <div class="timeline-track"></div>
-                        <!-- Cut segments -->
-                        <div v-for="(cut, index) in cuts" :key="index" class="timeline-segment"
-                            :style="getSegmentStyle(cut)">
-                        </div>
-                        <!-- Active cut being drawn -->
-                        <div v-if="activeCutStart !== null" class="timeline-segment"
-                            :style="getSegmentStyle({start: activeCutStart, end: currentTime})">
+                    <div class="timeline-wrapper">
+                        <div class="timeline-controls">
+                            <div class="zoom-controls">
+                                <button class="zoom-btn" :class="{ active: zoomLevel === 10 }"
+                                    @click="setZoom(10)">1x</button>
+                                <button class="zoom-btn" :class="{ active: zoomLevel === 20 }"
+                                    @click="setZoom(20)">2x</button>
+                                <button class="zoom-btn" :class="{ active: zoomLevel === 50 }"
+                                    @click="setZoom(50)">5x</button>
+                                <button class="zoom-btn" :class="{ active: zoomLevel === 100 }"
+                                    @click="setZoom(100)">10x</button>
+                            </div>
+                            <div style="font-size: 0.8rem; color: #aaa;">
+                                Ctrl+Scroll to zoom, Scroll to move
+                            </div>
                         </div>
 
-                        <div class="timeline-cursor" :style="{ left: (currentTime / duration * 100) + '%' }"></div>
+                        <div class="timeline-scroll-container" ref="timelineScrollContainer" @scroll="handleScroll"
+                            @wheel="handleWheel">
+                            <div class="timeline-content" :style="{ width: timelineWidth + 'px' }" @click="seek"
+                                @mousemove="handleMouseMove" ref="timelineContent">
+                                <div class="timeline-track"></div>
+
+                                <!-- Ticks -->
+                                <div class="timeline-ticks">
+                                    <div v-for="tick in ticks" :key="tick.time" class="tick"
+                                        :class="{ major: tick.major }" :style="{ left: tick.left + 'px' }">
+                                        <span v-if="tick.major" class="tick-label">[[ tick.label ]]</span>
+                                    </div>
+                                </div>
+
+                                <!-- Cut segments -->
+                                <div v-for="(cut, index) in cuts" :key="index" class="timeline-segment"
+                                    :class="{ selected: selectedCutIndex === index }" :style="getSegmentStyle(cut)"
+                                    @click.stop="selectCut(index, null)" @contextmenu.prevent="handleRightClick(index)">
+
+                                    <!-- Handles -->
+                                    <div class="segment-handle start"
+                                        :class="{ active: selectedCutIndex === index && selectedHandle === 'start' }"
+                                        @click.stop="selectCut(index, 'start')"></div>
+                                    <div class="segment-handle end"
+                                        :class="{ active: selectedCutIndex === index && selectedHandle === 'end' }"
+                                        @click.stop="selectCut(index, 'end')"></div>
+                                </div>
+
+                                <!-- Active cut being drawn -->
+                                <div v-if="activeCutStart !== null" class="timeline-segment"
+                                    :style="getSegmentStyle({start: activeCutStart, end: currentTime})">
+                                </div>
+
+                                <div class="timeline-cursor" :style="{ left: (currentTime * zoomLevel) + 'px' }"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

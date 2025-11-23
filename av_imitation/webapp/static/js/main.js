@@ -141,9 +141,21 @@ createApp({
         const activeCutStart = ref(null);
 
         const timeline = ref(null);
+        const timelineScrollContainer = ref(null);
+        const timelineContent = ref(null);
         let playInterval = null;
         let previewInterval = null;
         const previewTime = ref(0);
+
+        // Timeline State
+        const zoomLevel = ref(10); // pixels per second
+        const selectedCutIndex = ref(-1);
+        const selectedHandle = ref(null); // 'start' or 'end'
+
+        // History & Reset
+        const history = ref([]);
+        const historyIndex = ref(-1);
+        const originalCuts = ref([]);
 
         // Settings State
         const showSettings = ref(false);
@@ -413,15 +425,150 @@ createApp({
             };
         };
 
+        // Timeline Helpers
+        const timelineWidth = computed(() => duration.value * zoomLevel.value);
+
+        const ticks = computed(() => {
+            if (!duration.value) return [];
+            const t = [];
+            // Determine interval
+            // Target ~100px per major tick
+            const targetPx = 100;
+            const rawInterval = targetPx / zoomLevel.value;
+
+            // Snap to nice numbers: 1, 2, 5, 10, 30, 60
+            const niceIntervals = [1, 2, 5, 10, 30, 60];
+            let interval = niceIntervals[0];
+            for (const nice of niceIntervals) {
+                if (nice >= rawInterval) {
+                    interval = nice;
+                    break;
+                }
+            }
+            if (rawInterval > 60) interval = 60;
+
+            for (let i = 0; i <= duration.value; i += interval) {
+                t.push({
+                    time: i,
+                    left: i * zoomLevel.value,
+                    major: true,
+                    label: i % 60 === 0 ? `${i / 60}m` : `${i}s`
+                });
+            }
+            return t;
+        });
+
+        const setZoom = (level) => {
+            // Try to keep current time centered or at least visible
+            const container = timelineScrollContainer.value;
+            const centerTime = currentTime.value;
+
+            zoomLevel.value = level;
+
+            // Wait for DOM update then scroll
+            setTimeout(() => {
+                if (container) {
+                    const scrollPos = (centerTime * zoomLevel.value) - (container.clientWidth / 2);
+                    container.scrollLeft = Math.max(0, scrollPos);
+                }
+            }, 0);
+        };
+
+        const handleScroll = (e) => {
+            // Optional: sync things if needed
+        };
+
+        const handleWheel = (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                let newZoom = zoomLevel.value * delta;
+                newZoom = Math.max(10, Math.min(200, newZoom));
+
+                // Snap to presets if close? Nah, just set it.
+                // Or just step through presets: 10, 20, 50, 100
+                const presets = [10, 20, 50, 100, 200];
+                if (e.deltaY < 0) { // Zoom in
+                    const next = presets.find(p => p > zoomLevel.value);
+                    if (next) zoomLevel.value = next;
+                } else { // Zoom out
+                    const prev = [...presets].reverse().find(p => p < zoomLevel.value);
+                    if (prev) zoomLevel.value = prev;
+                }
+            }
+        };
+
+        const selectCut = (index, handle) => {
+            selectedCutIndex.value = index;
+            selectedHandle.value = handle;
+        };
+
+        const handleRightClick = (index) => {
+            pushHistory();
+            cuts.value.splice(index, 1);
+            selectedCutIndex.value = -1;
+        };
+
+        // History
+        const pushHistory = () => {
+            // Remove future history if we are in middle
+            if (historyIndex.value < history.value.length - 1) {
+                history.value = history.value.slice(0, historyIndex.value + 1);
+            }
+            // Deep copy cuts
+            history.value.push(JSON.parse(JSON.stringify(cuts.value)));
+            if (history.value.length > 1000) history.value.shift();
+            historyIndex.value = history.value.length - 1;
+        };
+
+        const undo = () => {
+            if (historyIndex.value >= 0) {
+                // Wait, if we are at the end, we need to save current state first?
+                // Standard undo: 
+                // 1. State A. Push A.
+                // 2. Change to B. Push B.
+                // 3. Undo -> Restore A.
+
+                // My pushHistory implementation is "push before change".
+                // So history contains [State0, State1, State2].
+                // Current state is State3 (not in history yet?).
+
+                // Let's simplify: History stores snapshots.
+                // When we undo, we go back one snapshot.
+
+                // Actually, let's just save the *previous* state before modification.
+
+                const prev = history.value[historyIndex.value];
+                if (prev) {
+                    cuts.value = JSON.parse(JSON.stringify(prev));
+                    historyIndex.value--;
+                }
+            }
+        };
+
+        // We need to push history *before* making changes.
+        // Helper to wrap changes? Or just call pushHistory() manually.
+
+        const resetCuts = () => {
+            if (confirm("Reset cuts to original values?")) {
+                pushHistory();
+                cuts.value = JSON.parse(JSON.stringify(originalCuts.value));
+            }
+        };
+
         const selectBag = async (bag) => {
             // bag is now an object
             currentBag.value = bag.name;
             currentTime.value = 0;
             isPlaying.value = false;
+            if (playInterval) clearInterval(playInterval); // Reset play state
             cuts.value = [];
             description.value = "";
             activeCutStart.value = null;
             telemetry.value = [];
+            selectedCutIndex.value = -1;
+            history.value = [];
+            historyIndex.value = -1;
 
             // Stop any existing preload
             if (preloadController.value) {
@@ -439,6 +586,28 @@ createApp({
                 if (data.user_meta) {
                     description.value = data.user_meta.description || "";
                     cuts.value = data.user_meta.cuts || [];
+                } else {
+                    // If no user meta, maybe we have default cuts from backend?
+                    // The backend sends `cuts` in bag list, but maybe not in info?
+                    // Let's assume `data.user_meta.cuts` is the source of truth.
+                    // If it's empty, we might want to use the "L1" cuts if they exist?
+                    // The backend `get_bag_info` returns `user_meta`.
+                    // If we want the "original" L1 cuts, we might need to fetch them or calculate them.
+                    // For now, let's assume the backend provides them or we save them initially.
+                    // Wait, `originalCuts` should be the L1 cuts.
+                    // If `user_meta` exists, `cuts` are user edits.
+                    // Where do we get L1 cuts?
+                    // In `bag-list`, we use `bag.cuts`. Those are generated by `generate_default_cuts`.
+                    // We should probably grab those.
+                    const bagInList = bags.value.find(b => b.name === bag.name);
+                    if (bagInList && bagInList.cuts) {
+                        originalCuts.value = JSON.parse(JSON.stringify(bagInList.cuts));
+                        if (!data.user_meta || !data.user_meta.cuts) {
+                            cuts.value = JSON.parse(JSON.stringify(bagInList.cuts));
+                        }
+                    } else {
+                        originalCuts.value = [];
+                    }
                 }
 
                 if (data.telemetry) {
@@ -547,10 +716,12 @@ createApp({
 
         const seek = (event) => {
             if (!duration.value) return;
-            const rect = timeline.value.getBoundingClientRect();
+            // event.target might be the cursor or segment, so use timelineContent ref
+            const rect = timelineContent.value.getBoundingClientRect();
             const x = event.clientX - rect.left;
-            const percentage = Math.max(0, Math.min(1, x / rect.width));
-            currentTime.value = percentage * duration.value;
+            // x is pixels from start of timeline
+            const time = x / zoomLevel.value;
+            currentTime.value = Math.max(0, Math.min(duration.value, time));
         };
 
         const handleMouseMove = (event) => {
@@ -565,6 +736,7 @@ createApp({
 
         const markEnd = () => {
             if (activeCutStart.value !== null) {
+                pushHistory();
                 let start = activeCutStart.value;
                 let end = currentTime.value;
                 if (start > end) [start, end] = [end, start];
@@ -575,17 +747,20 @@ createApp({
         };
 
         const clearCuts = () => {
-            cuts.value = [];
-            activeCutStart.value = null;
+            if (confirm("Clear all cuts?")) {
+                pushHistory();
+                cuts.value = [];
+                activeCutStart.value = null;
+            }
         };
 
         const getSegmentStyle = (segment) => {
             if (!duration.value) return {};
-            const startPct = (segment.start / duration.value) * 100;
-            const endPct = (segment.end / duration.value) * 100;
+            const startPx = segment.start * zoomLevel.value;
+            const endPx = segment.end * zoomLevel.value;
             return {
-                left: `${startPct}%`,
-                width: `${endPct - startPct}%`
+                left: `${startPx}px`,
+                width: `${endPx - startPx}px`
             };
         };
 
@@ -635,9 +810,33 @@ createApp({
             } else if (e.code === 'BracketRight') {
                 markEnd();
             } else if (e.code === 'ArrowLeft') {
-                currentTime.value = Math.max(0, currentTime.value - 0.1);
+                if (selectedCutIndex.value !== -1 && selectedHandle.value) {
+                    pushHistory();
+                    const cut = cuts.value[selectedCutIndex.value];
+                    if (selectedHandle.value === 'start') {
+                        cut.start = Math.max(0, cut.start - 0.1);
+                        if (cut.start > cut.end) cut.start = cut.end;
+                    } else {
+                        cut.end = Math.max(cut.start, cut.end - 0.1);
+                    }
+                } else {
+                    currentTime.value = Math.max(0, currentTime.value - 0.1);
+                }
             } else if (e.code === 'ArrowRight') {
-                currentTime.value = Math.min(duration.value, currentTime.value + 0.1);
+                if (selectedCutIndex.value !== -1 && selectedHandle.value) {
+                    pushHistory();
+                    const cut = cuts.value[selectedCutIndex.value];
+                    if (selectedHandle.value === 'start') {
+                        cut.start = Math.min(cut.end, cut.start + 0.1);
+                    } else {
+                        cut.end = Math.min(duration.value, cut.end + 0.1);
+                    }
+                } else {
+                    currentTime.value = Math.min(duration.value, currentTime.value + 0.1);
+                }
+            } else if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                undo();
             }
         });
 
@@ -652,7 +851,8 @@ createApp({
             description,
             cuts,
             activeCutStart,
-            timeline,
+            timelineScrollContainer,
+            timelineContent,
             bufferingProgress,
             selectBag,
             togglePlay,
@@ -672,6 +872,19 @@ createApp({
             // New Features
             deleteBag,
             getSparklinePoints,
+            // Timeline
+            zoomLevel,
+            setZoom,
+            timelineWidth,
+            ticks,
+            handleScroll,
+            handleWheel,
+            selectCut,
+            selectedCutIndex,
+            selectedHandle,
+            handleRightClick,
+            resetCuts,
+            undo,
             formatBagDate: (bag) => {
                 const options = {
                     year: 'numeric',
