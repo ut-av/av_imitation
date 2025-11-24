@@ -536,6 +536,30 @@ def process_bag():
     
     return jsonify({"status": "started", "output_dir": output_dir})
 
+@app.route('/api/check_processing', methods=['POST'])
+def check_processing():
+    data = request.json
+    bag_name = data.get('bag_name')
+    options = data.get('options', {})
+    
+    if not bag_name:
+        return jsonify({"error": "Bag name required"}), 400
+        
+    folder_name = processor.get_output_folder_name(options)
+    output_dir = os.path.join(PROCESSED_DIR, folder_name, bag_name)
+    images_dir = os.path.join(output_dir, "images")
+    
+    if os.path.exists(images_dir) and os.path.isdir(images_dir):
+        # Get modification time of the directory
+        mtime = os.path.getmtime(images_dir)
+        return jsonify({
+            "exists": True,
+            "timestamp": mtime,
+            "path": output_dir
+        })
+    else:
+        return jsonify({"exists": False})
+
 @app.route('/api/processing_status/<bag_name>')
 def get_processing_status(bag_name):
     job = processing_jobs.get(bag_name)

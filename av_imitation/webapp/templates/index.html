@@ -968,6 +968,11 @@
                                         <div v-if="processingStatus"
                                             style="font-size: 0.9rem; color: #aaa; margin-top: 4px;">[[ processingStatus
                                             ]]</div>
+                                        <div v-if="existingProcessing && !isProcessing"
+                                            style="font-size: 0.8rem; color: var(--secondary-color); margin-top: 4px;">
+                                            Processed on: [[ new Date(existingProcessing.timestamp *
+                                            1000).toLocaleString() ]]
+                                        </div>
                                     </div>
                                 </div>
                             </div>

@@ -654,8 +654,19 @@ createApp({
             currentTime.value = 0;
             isPlaying.value = false;
             if (playInterval) clearInterval(playInterval); // Reset play state
+
+            // Reset processing state
+            processingStatus.value = '';
+            processingProgress.value = 0;
+            isProcessing.value = false;
+            if (processingPollInterval) clearInterval(processingPollInterval);
+
+            // Check for existing processing
+            checkExistingProcessing();
+
+            // Load metadata
+            description.value = bag.description || '';
             cuts.value = [];
-            description.value = "";
             activeCutStart.value = null;
             telemetry.value = [];
             selectedCutIndex.value = -1;
@@ -937,7 +948,47 @@ createApp({
         const processingProgress = ref(0);
         const processingTotal = ref(0);
         const processingCurrent = ref(0);
+        const existingProcessing = ref(null); // { timestamp: number, path: string }
         let processingPollInterval = null;
+
+        const checkExistingProcessing = async () => {
+            if (!currentBag.value) return;
+
+            const payload = {
+                bag_name: currentBag.value,
+                options: {
+                    channels: options.value.channels,
+                    canny: options.value.canny,
+                    sam3: options.value.sam3,
+                    depth: options.value.depth
+                }
+            };
+
+            if (options.value.resize) {
+                payload.options.resolution = [options.value.width, options.value.height];
+            }
+
+            try {
+                const res = await fetch('/api/check_processing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (data.exists) {
+                    existingProcessing.value = data;
+                } else {
+                    existingProcessing.value = null;
+                }
+            } catch (e) {
+                console.error("Error checking existing processing", e);
+            }
+        };
+
+        // Watch options to check for existing processing
+        watch(options, () => {
+            checkExistingProcessing();
+        }, { deep: true });
 
         const pollProcessingStatus = async () => {
             if (!processingBag.value) return;
@@ -954,6 +1005,8 @@ createApp({
                         processingStatus.value = "Processing complete!";
                         isProcessing.value = false;
                         clearInterval(processingPollInterval);
+                        checkExistingProcessing(); // Refresh existing status
+                        fetchProcessedBags(); // Refresh list
                     } else if (data.status === 'error') {
                         processingStatus.value = "Error: " + data.error;
                         isProcessing.value = false;
@@ -973,6 +1026,12 @@ createApp({
 
         const startProcessing = async () => {
             if (!currentBag.value) return;
+
+            if (existingProcessing.value) {
+                if (!confirm("Processing output already exists for these options. Overwrite?")) {
+                    return;
+                }
+            }
 
             isProcessing.value = true;
             processingStatus.value = "Starting processing...";
@@ -1266,6 +1325,7 @@ createApp({
             processingProgress,
             processingTotal,
             processingCurrent,
+            existingProcessing,
             startProcessing,
             cancelProcessing,
             currentBagProcessedList,
