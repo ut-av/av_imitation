@@ -47,8 +47,13 @@ class AVDataset(Dataset):
         random.shuffle(bags)
         
         n = len(bags)
-        n_train = int(0.7 * n)
-        n_val = int(0.15 * n)
+        if n > 1:
+            n_val = max(1, int(0.15 * n))
+        else:
+            n_val = 0
+            
+        n_test = int(0.15 * n)
+        n_train = n - n_val - n_test
         
         train_bags = set(bags[:n_train])
         val_bags = set(bags[n_train:n_train+n_val])
