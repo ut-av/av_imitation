@@ -13,6 +13,10 @@ import numpy as np
 import io
 from ament_index_python.packages import get_package_share_directory
 
+import threading
+import uuid
+import time
+
 package_share_directory = get_package_share_directory('av_imitation')
 template_dir = os.path.join(package_share_directory, 'webapp', 'templates')
 static_dir = os.path.join(package_share_directory, 'webapp', 'static')
@@ -21,6 +25,9 @@ app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 
 BAG_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags")
 PROCESSED_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags_processed")
+DATASETS_DIR = os.path.join(PROCESSED_DIR, "datasets")
+if not os.path.exists(DATASETS_DIR):
+    os.makedirs(DATASETS_DIR)
 bridge = CvBridge()
 
 from av_imitation.src.image_processor import ImageProcessor
@@ -705,189 +712,220 @@ def list_processed_bags():
             
     return jsonify(results)
 
+generation_jobs = {}
+
+def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration):
+    try:
+        samples = []
+        total_bags = len(selected_bags)
+        
+        for i, bag_info in enumerate(selected_bags):
+            generation_jobs[job_id]['current'] = i
+            generation_jobs[job_id]['total'] = total_bags
+            generation_jobs[job_id]['progress'] = (i / total_bags) * 100
+            
+            bag_path = bag_info['path']
+            bag_name = bag_info['bag_name']
+            images_dir = os.path.join(bag_path, "images")
+            
+            # Load telemetry
+            telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
+            
+            if not os.path.exists(telemetry_path):
+                print(f"Telemetry not found for {bag_name}")
+                continue
+                
+            with open(telemetry_path, 'r') as f:
+                telemetry = json.load(f)
+                
+            # Sort telemetry by time
+            telemetry.sort(key=lambda x: x['time'])
+            telemetry_times = np.array([x['time'] for x in telemetry])
+            
+            # Get available images
+            image_files = sorted([f for f in os.listdir(images_dir) if f.endswith('.jpg')])
+            
+            # Parse timestamps from filenames
+            image_times = []
+            for f in image_files:
+                try:
+                    t = float(os.path.splitext(f)[0])
+                    image_times.append(t)
+                except:
+                    pass
+            
+            image_times = np.array(image_times)
+            
+            # Generate samples
+            hist_interval = 1.0 / history_rate
+            fut_interval = 1.0 / future_rate
+            
+            num_hist = int(history_duration * history_rate)
+            num_fut = int(future_duration * future_rate)
+            
+            for curr_t in image_times:
+                # Current image
+                curr_img_name = f"{curr_t:.6f}.jpg"
+                
+                # Find history images
+                history_images = []
+                valid_sample = True
+                
+                for k in range(num_hist, 0, -1):
+                    target_t = curr_t - k * hist_interval
+                    idx = (np.abs(image_times - target_t)).argmin()
+                    closest_t = image_times[idx]
+                    
+                    if abs(closest_t - target_t) > 0.1:
+                        valid_sample = False
+                        break
+                        
+                    history_images.append(os.path.join(bag_path, "images", f"{closest_t:.6f}.jpg"))
+                    
+                if not valid_sample:
+                    continue
+                    
+                # Find future actions and images
+                future_actions = []
+                future_images = []
+                
+                for k in range(1, num_fut + 1):
+                    target_t = curr_t + k * fut_interval
+                    
+                    idx = (np.abs(telemetry_times - target_t)).argmin()
+                    closest_t = telemetry_times[idx]
+                    
+                    if abs(closest_t - target_t) > 0.1:
+                        valid_sample = False
+                        break
+                        
+                    entry = telemetry[idx]
+                    future_actions.append([entry['steer'], entry['throttle']])
+                    
+                    img_idx = (np.abs(image_times - target_t)).argmin()
+                    closest_img_t = image_times[img_idx]
+                    if abs(closest_img_t - target_t) > 0.1:
+                        valid_sample = False
+                        break
+                    
+                    future_images.append(os.path.join(bag_path, "images", f"{closest_img_t:.6f}.jpg"))
+                    
+                if not valid_sample:
+                    continue
+                    
+                # Add sample
+                rel_curr = os.path.relpath(os.path.join(images_dir, curr_img_name), PROCESSED_DIR)
+                rel_hist = [os.path.relpath(p, PROCESSED_DIR) for p in history_images]
+                rel_fut = [os.path.relpath(p, PROCESSED_DIR) for p in future_images]
+                
+                samples.append({
+                    "bag": bag_name,
+                    "timestamp": curr_t,
+                    "current_image": rel_curr,
+                    "history_images": rel_hist,
+                    "future_actions": future_actions,
+                    "future_images": rel_fut
+                })
+                
+        # Save metadata
+        output_file = os.path.join(DATASETS_DIR, f"{dataset_name}.json")
+        meta = {
+            "root_dir": PROCESSED_DIR,
+            "dataset_name": dataset_name,
+            "source_bags": [b['bag_name'] for b in selected_bags], # Store source bags for duplicate checking
+            "parameters": {
+                "history_rate": history_rate,
+                "history_duration": history_duration,
+                "future_rate": future_rate,
+                "future_duration": future_duration
+            },
+            "samples": samples
+        }
+        
+        with open(output_file, 'w') as f:
+            json.dump(meta, f, indent=2)
+            
+        generation_jobs[job_id]['status'] = 'done'
+        generation_jobs[job_id]['progress'] = 100
+        generation_jobs[job_id]['file'] = output_file
+        generation_jobs[job_id]['count'] = len(samples)
+        
+    except Exception as e:
+        print(f"Generation error: {e}")
+        generation_jobs[job_id]['status'] = 'error'
+        generation_jobs[job_id]['error'] = str(e)
+
 @app.route('/api/generate_dataset', methods=['POST'])
 def generate_dataset():
     data = request.json
-    selected_bags = data.get('selected_bags', []) # List of {path, bag_name, ...}
+    selected_bags = data.get('selected_bags', [])
     dataset_name = data.get('dataset_name', 'dataset')
     
-    # Sampling options
-    history_rate = float(data.get('history_rate', 1.0)) # Hz
-    history_duration = float(data.get('history_duration', 1.0)) # seconds
-    future_rate = float(data.get('future_rate', 1.0)) # Hz
-    future_duration = float(data.get('future_duration', 1.0)) # seconds
+    history_rate = float(data.get('history_rate', 1.0))
+    history_duration = float(data.get('history_duration', 1.0))
+    future_rate = float(data.get('future_rate', 1.0))
+    future_duration = float(data.get('future_duration', 1.0))
     
     if not selected_bags:
         return jsonify({"error": "No bags selected"}), 400
         
-    samples = []
-    
-    for bag_info in selected_bags:
-        bag_path = bag_info['path']
-        bag_name = bag_info['bag_name']
-        images_dir = os.path.join(bag_path, "images")
-        
-        # Load telemetry
-        # Telemetry is stored in PROCESSED_DIR / bag_name_telemetry.json (root of processed dir? or inside?)
-        # In `bag_info` endpoint, we save it to `PROCESSED_DIR / f"{bag_name}_telemetry.json"`.
-        # This is outside the specific processing folder.
-        telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
-        
-        if not os.path.exists(telemetry_path):
-            print(f"Telemetry not found for {bag_name}")
-            continue
-            
-        with open(telemetry_path, 'r') as f:
-            telemetry = json.load(f)
-            
-        # Sort telemetry by time
-        telemetry.sort(key=lambda x: x['time'])
-        telemetry_times = np.array([x['time'] for x in telemetry])
-        
-        # Get available images
-        image_files = sorted([f for f in os.listdir(images_dir) if f.endswith('.jpg')])
-        
-        # Parse timestamps from filenames
-        image_times = []
-        for f in image_files:
-            try:
-                t = float(os.path.splitext(f)[0])
-                image_times.append(t)
-            except:
-                pass
-        
-        image_times = np.array(image_times)
-        
-        # Generate samples
-        # Iterate through images as "current" frame
-        # We need to find history frames and future actions
-        
-        # Convert rates to intervals
-        hist_interval = 1.0 / history_rate
-        fut_interval = 1.0 / future_rate
-        
-        num_hist = int(history_duration * history_rate)
-        num_fut = int(future_duration * future_rate)
-        
-        for i, curr_t in enumerate(image_times):
-            # Current image
-            curr_img_name = f"{curr_t:.6f}.jpg"
-            
-            # Find history images
-            # We want images at t - interval, t - 2*interval, ...
-            # We need to find the closest image for each target time
-            history_images = []
-            valid_sample = True
-            
-            for k in range(num_hist, 0, -1):
-                target_t = curr_t - k * hist_interval
-                # Find closest image
-                idx = (np.abs(image_times - target_t)).argmin()
-                closest_t = image_times[idx]
-                
-                # Check if close enough (e.g. within 0.1s)
-                if abs(closest_t - target_t) > 0.1:
-                    valid_sample = False
-                    break
-                    
-                history_images.append(os.path.join(bag_path, "images", f"{closest_t:.6f}.jpg"))
-                
-            if not valid_sample:
-                continue
-                
-            # Find future actions and images
-            # We want actions at t + interval, t + 2*interval, ...
-            future_actions = []
-            future_images = []
-            
-            for k in range(1, num_fut + 1):
-                target_t = curr_t + k * fut_interval
-                
-                # Find closest telemetry
-                idx = (np.abs(telemetry_times - target_t)).argmin()
-                closest_t = telemetry_times[idx]
-                
-                if abs(closest_t - target_t) > 0.1:
-                    valid_sample = False
-                    break
-                    
-                # Action: [steer, throttle]
-                entry = telemetry[idx]
-                future_actions.append([entry['steer'], entry['throttle']])
-                
-                # Find closest image for visualization
-                img_idx = (np.abs(image_times - target_t)).argmin()
-                closest_img_t = image_times[img_idx]
-                if abs(closest_img_t - target_t) > 0.1:
-                    # If image is missing, maybe just skip image but keep action?
-                    # Or invalidate sample?
-                    # Let's invalidate to be safe for now, or just append None?
-                    # Requirement says "show the future images".
-                    valid_sample = False
-                    break
-                
-                future_images.append(os.path.join(bag_path, "images", f"{closest_img_t:.6f}.jpg"))
-                
-            if not valid_sample:
-                continue
-                
-            # Add sample
-            # Let's make paths relative to PROCESSED_DIR
-            rel_curr = os.path.relpath(os.path.join(images_dir, curr_img_name), PROCESSED_DIR)
-            rel_hist = [os.path.relpath(p, PROCESSED_DIR) for p in history_images]
-            rel_fut = [os.path.relpath(p, PROCESSED_DIR) for p in future_images]
-            
-            samples.append({
-                "bag": bag_name,
-                "timestamp": curr_t,
-                "current_image": rel_curr,
-                "history_images": rel_hist,
-                "future_actions": future_actions,
-                "future_images": rel_fut
-            })
-            
-    # Save metadata
-    output_file = os.path.join(PROCESSED_DIR, f"{dataset_name}.json")
-    meta = {
-        "root_dir": PROCESSED_DIR,
-        "dataset_name": dataset_name,
-        "parameters": {
-            "history_rate": history_rate,
-            "history_duration": history_duration,
-            "future_rate": future_rate,
-            "future_duration": future_duration
-        },
-        "samples": samples
+    job_id = str(uuid.uuid4())
+    generation_jobs[job_id] = {
+        'status': 'running',
+        'progress': 0,
+        'current': 0,
+        'total': len(selected_bags)
     }
     
-    with open(output_file, 'w') as f:
-        json.dump(meta, f, indent=2)
-        
-    return jsonify({"status": "success", "file": output_file, "count": len(samples)})
+    thread = threading.Thread(target=generate_dataset_thread, args=(
+        job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration
+    ))
+    thread.start()
+    
+    return jsonify({"job_id": job_id})
+
+@app.route('/api/generation_status/<job_id>')
+def generation_status(job_id):
+    if job_id not in generation_jobs:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(generation_jobs[job_id])
 
 @app.route('/api/datasets')
 def list_datasets():
-    if not os.path.exists(PROCESSED_DIR):
+    if not os.path.exists(DATASETS_DIR):
         return jsonify([])
         
     datasets = []
-    for f in os.listdir(PROCESSED_DIR):
-        if f.endswith('.json') and not f.endswith('_telemetry.json') and not f.endswith('options.json'):
-            # It's likely a dataset metadata file
-            # Check content to be sure?
+    for f in os.listdir(DATASETS_DIR):
+        if f.endswith('.json'):
             try:
-                with open(os.path.join(PROCESSED_DIR, f), 'r') as file:
+                with open(os.path.join(DATASETS_DIR, f), 'r') as file:
                     data = json.load(file)
                     if 'dataset_name' in data:
-                        datasets.append(data['dataset_name'])
+                        datasets.append({
+                            "dataset_name": data['dataset_name'],
+                            "source_bags": data.get('source_bags', []),
+                            "samples_count": len(data.get('samples', [])),
+                            "parameters": data.get('parameters', {})
+                        })
             except:
                 pass
                 
     return jsonify(datasets)
 
-@app.route('/api/dataset/<name>')
-def get_dataset(name):
-    path = os.path.join(PROCESSED_DIR, f"{name}.json")
+@app.route('/api/dataset/<name>', methods=['GET', 'DELETE'])
+def handle_dataset(name):
+    path = os.path.join(DATASETS_DIR, f"{name}.json")
+    
+    if request.method == 'DELETE':
+        if not os.path.exists(path):
+            return jsonify({"error": "Dataset not found"}), 404
+        try:
+            os.remove(path)
+            return jsonify({"status": "success"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     if not os.path.exists(path):
         return jsonify({"error": "Dataset not found"}), 404
         

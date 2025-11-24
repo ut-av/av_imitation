@@ -1105,16 +1105,108 @@ createApp({
             }
         });
 
+        const generationProgress = ref(0);
+        const generationPollInterval = ref(null);
+
         const currentBagProcessedList = computed(() => {
             if (!currentBag.value || !processedBags.value) return [];
             return processedBags.value.filter(b => b.bag_name === currentBag.value);
         });
 
+        // Enrich processed bags with original bag metadata
+        const enrichedProcessedBags = computed(() => {
+            return processedBags.value.map(pBag => {
+                const originalBag = bags.value.find(b => b.name === pBag.bag_name);
+                return {
+                    ...pBag,
+                    duration: originalBag ? originalBag.duration : 0,
+                    start_time: originalBag ? originalBag.start_time : 0,
+                    image_count: originalBag ? originalBag.image_count : 0
+                };
+            });
+        });
+
+        const duplicateDataset = computed(() => {
+            if (selectedProcessedBags.value.length === 0 || !datasets.value) return null;
+
+            // Create a set of selected bag names
+            const selectedNames = new Set(selectedProcessedBags.value.map(b => b.bag_name));
+
+            // Check each existing dataset
+            for (const ds of datasets.value) {
+                // ds is now an object { dataset_name, source_bags, samples_count, parameters }
+                if (!ds.source_bags) continue;
+
+                const sourceNames = new Set(ds.source_bags);
+
+                // Check for exact match of bags
+                if (selectedNames.size === sourceNames.size &&
+                    [...selectedNames].every(name => sourceNames.has(name))) {
+
+                    // Check parameters if they exist
+                    if (ds.parameters) {
+                        const params = ds.parameters;
+                        const opts = datasetOptions.value;
+
+                        // Use a small epsilon for float comparison or just direct comparison if they are numbers
+                        // Inputs are v-model.number, so they should be numbers.
+                        if (params.history_rate === opts.historyRate &&
+                            params.history_duration === opts.historyDuration &&
+                            params.future_rate === opts.futureRate &&
+                            params.future_duration === opts.futureDuration) {
+                            return ds.dataset_name;
+                        }
+                    } else {
+                        // If dataset has no parameters (legacy?), maybe just warn based on bags?
+                        // Or assume it's a duplicate if we can't verify parameters?
+                        // Let's assume strict matching: if we can't verify params, we don't warn, 
+                        // OR we warn but say "potential duplicate". 
+                        // But user asked to incorporate params. So if params don't match, it's NOT a duplicate.
+                        // If ds has no params, we can't match params, so it's not a duplicate in this strict sense.
+                        // However, legacy datasets might be considered duplicates?
+                        // Let's stick to strict parameter matching.
+                    }
+                }
+            }
+            return null;
+        });
+
+        const pollGenerationStatus = async (jobId) => {
+            try {
+                const res = await fetch(`/api/generation_status/${jobId}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    generationStatus.value = "Error: " + data.error;
+                    isGenerating.value = false;
+                    clearInterval(generationPollInterval.value);
+                } else {
+                    generationProgress.value = data.progress;
+
+                    if (data.status === 'done') {
+                        generationStatus.value = `Success! Generated ${data.count} samples in ${data.file}`;
+                        isGenerating.value = false;
+                        clearInterval(generationPollInterval.value);
+                        fetchDatasets(); // Refresh datasets list
+                    } else if (data.status === 'error') {
+                        generationStatus.value = "Error: " + data.error;
+                        isGenerating.value = false;
+                        clearInterval(generationPollInterval.value);
+                    } else {
+                        generationStatus.value = `Generating... ${data.current}/${data.total} (${data.progress.toFixed(1)}%)`;
+                    }
+                }
+            } catch (e) {
+                console.error("Error polling generation status", e);
+            }
+        };
+
         const generateDataset = async () => {
             if (selectedProcessedBags.value.length === 0) return;
 
             isGenerating.value = true;
-            generationStatus.value = "Generating dataset...";
+            generationStatus.value = "Starting generation...";
+            generationProgress.value = 0;
 
             const payload = {
                 selected_bags: selectedProcessedBags.value,
@@ -1135,13 +1227,15 @@ createApp({
 
                 if (data.error) {
                     generationStatus.value = "Error: " + data.error;
+                    isGenerating.value = false;
                 } else {
-                    generationStatus.value = `Success! Generated ${data.count} samples in ${data.file}`;
+                    generationStatus.value = "Generation started...";
+                    if (generationPollInterval.value) clearInterval(generationPollInterval.value);
+                    generationPollInterval.value = setInterval(() => pollGenerationStatus(data.job_id), 1000);
                 }
             } catch (e) {
                 console.error("Generation error", e);
-                generationStatus.value = "Error generating dataset.";
-            } finally {
+                generationStatus.value = "Error starting generation.";
                 isGenerating.value = false;
             }
         };
@@ -1160,13 +1254,16 @@ createApp({
         };
 
         watch(currentStep, (newStep) => {
-            if (newStep === 3) {
+            if (newStep === 3 || newStep === 2) { // Fetch datasets for duplicate checking in step 2 as well
                 fetchDatasets();
             }
         });
 
+        const loadingDataset = ref(false);
+
         const selectDataset = async (ds) => {
-            const name = ds.dataset_name || ds;
+            const name = ds.dataset_name || ds; // Handle both object and string (legacy)
+            loadingDataset.value = true;
             try {
                 const res = await fetch(`/api/dataset/${name}`);
                 datasetData.value = await res.json();
@@ -1175,6 +1272,37 @@ createApp({
                 currentSampleIndex.value = 0;
             } catch (e) {
                 console.error("Failed to load dataset", e);
+            } finally {
+                loadingDataset.value = false;
+            }
+        };
+
+        const deleteDataset = async (ds) => {
+            const name = ds.dataset_name || ds;
+            if (!confirm(`Are you sure you want to delete dataset "${name}"? This cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/dataset/${name}`, { method: 'DELETE' });
+                const data = await res.json();
+
+                if (data.error) {
+                    alert("Error deleting dataset: " + data.error);
+                } else {
+                    // Refresh list
+                    fetchDatasets();
+                    // If deleted dataset was selected, clear selection
+                    if (selectedDataset.value && (selectedDataset.value.dataset_name === name || selectedDataset.value === name)) {
+                        selectedDataset.value = null;
+                        datasetData.value = null;
+                        currentVizBag.value = null;
+                        currentSampleIndex.value = 0;
+                    }
+                }
+            } catch (e) {
+                console.error("Delete error", e);
+                alert("Failed to delete dataset");
             }
         };
 
@@ -1220,6 +1348,34 @@ createApp({
             }
         };
 
+        const loadingSample = ref(false);
+        const loadedImagesCount = ref(0);
+
+        const totalImagesToLoad = computed(() => {
+            if (!currentSample.value) return 0;
+            return (currentSample.value.history_images ? currentSample.value.history_images.length : 0) +
+                1 + // current image
+                (currentSample.value.future_images ? currentSample.value.future_images.length : 0);
+        });
+
+        const onImageLoad = () => {
+            loadedImagesCount.value++;
+            if (loadedImagesCount.value >= totalImagesToLoad.value) {
+                loadingSample.value = false;
+            }
+        };
+
+        watch(currentSample, () => {
+            if (currentSample.value) {
+                loadingSample.value = true;
+                loadedImagesCount.value = 0;
+                // Safety check: if no images, stop loading immediately
+                if (totalImagesToLoad.value === 0) {
+                    loadingSample.value = false;
+                }
+            }
+        });
+
         const getSteerStyle = (val) => {
             // val is steer, -1 to 1. Center 50%.
             const pct = Math.abs(val) * 50;
@@ -1235,23 +1391,10 @@ createApp({
             let totalDuration = 0;
             let totalExamples = 0;
 
-            // Iterate over selected processed bags
-            // selectedProcessedBags contains the bag names (or objects?)
-            // In the UI: <input type="checkbox" :value="bag" v-model="selectedProcessedBags">
-            // So it contains the bag objects from `processedBags`.
-
             selectedProcessedBags.value.forEach(pBag => {
-                // pBag has { bag_name, options_name, options, path }
-                // We need to find the original bag info to get duration and image count
-                // We can find it in `bags` array
                 const originalBag = bags.value.find(b => b.name === pBag.bag_name);
                 if (originalBag) {
                     totalDuration += originalBag.duration || 0;
-
-                    // Calculate examples
-                    // Frame rate = image_count / duration
-                    // Valid duration = duration - history - future
-                    // Examples = valid_duration * frame_rate
 
                     const duration = originalBag.duration || 0;
                     const imageCount = originalBag.image_count || 0;
@@ -1390,10 +1533,13 @@ createApp({
             datasets,
             loadingDatasets,
             selectedDataset,
+            currentDataset: selectedDataset,
             selectDataset,
             datasetBags,
             currentVizBag,
+            currentDatasetBag: currentVizBag,
             vizSamples,
+            datasetSamples: vizSamples,
             currentSampleIndex,
             currentSample,
             datasetParams,
@@ -1402,7 +1548,17 @@ createApp({
             selectSample,
             nextSample,
             prevSample,
-            datasetStats
+            datasetStats,
+            enrichedProcessedBags,
+            duplicateDataset,
+            duplicateDataset,
+            generationProgress,
+            duplicateDataset,
+            generationProgress,
+            loadingDataset,
+            loadingSample,
+            onImageLoad,
+            deleteDataset
         };
     }
 }).mount('#app');

@@ -1059,13 +1059,21 @@
                         <div v-if="loadingProcessedBags" class="loading">Loading...</div>
                         <div
                             style="max-height: 300px; overflow-y: auto; background: #2c2c2c; padding: 1rem; border-radius: 4px; margin-top: 0.5rem;">
-                            <div v-for="bag in processedBags" :key="bag.path"
+                            <div v-for="bag in enrichedProcessedBags" :key="bag.path"
                                 style="display: flex; align-items: center; margin-bottom: 0.5rem;">
                                 <input type="checkbox" :value="bag" v-model="selectedProcessedBags"
                                     style="margin-right: 1rem;">
-                                <div>
-                                    <div style="font-weight: 500;">[[ bag.bag_name ]]</div>
-                                    <div style="font-size: 0.8rem; color: #aaa;">[[ bag.options_name ]]</div>
+                                <div style="flex: 1;">
+                                    <div style="display: flex; justify-content: space-between;">
+                                        <div style="font-weight: 500;">[[ bag.bag_name ]]</div>
+                                        <div style="font-size: 0.8rem; color: #aaa;">[[ new Date(bag.duration *
+                                            1000).toISOString().substr(11, 8) ]]</div>
+                                    </div>
+                                    <div
+                                        style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #aaa;">
+                                        <div>[[ bag.options_name ]]</div>
+                                        <div>[[ formatBagDate(bag) ]]</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1087,7 +1095,22 @@
                         </div>
                     </div>
 
+                    <div v-if="duplicateDataset" class="alert alert-warning"
+                        style="margin-top: 1rem; background: #553300; padding: 1rem; border-radius: 4px; border: 1px solid #aa6600; color: #ffcc00;">
+                        <strong>Warning:</strong> A dataset named "[[ duplicateDataset ]]" already exists with these
+                        exact processed bags.
+                    </div>
+
                     <div style="margin-top: 2rem; text-align: right;">
+                        <div v-if="isGenerating" style="margin-bottom: 1rem;">
+                            <div style="background: #444; height: 10px; border-radius: 5px; overflow: hidden;">
+                                <div
+                                    :style="{ width: generationProgress + '%', background: 'var(--primary-color)', height: '100%' }">
+                                </div>
+                            </div>
+                            <div style="text-align: center; font-size: 0.8rem; margin-top: 0.2rem;">[[ generationStatus
+                                ]]</div>
+                        </div>
                         <button @click="generateDataset" :disabled="selectedProcessedBags.length === 0 || isGenerating"
                             style="padding: 1rem 2rem; font-size: 1.1rem;">
                             [[ isGenerating ? 'Generating...' : 'Generate Dataset' ]]
@@ -1102,7 +1125,7 @@
             </div>
 
             <!-- Step 3: Visualization -->
-            <div class="step-container" v-if="currentStep === 3" style="display: flex; flex-direction: column;">
+            <div class="step-container" v-if="currentStep === 3" style="display: flex; flex-direction: row;">
                 <div class="sidebar">
                     <h3>Datasets</h3>
                     <div v-if="loadingDatasets" class="loading">Loading...</div>
@@ -1113,14 +1136,27 @@
                             <div class="bag-info">
                                 <div class="bag-name-full">[[ ds.dataset_name ]]</div>
                                 <div class="bag-meta-line">
-                                    <span>[[ ds.samples ? ds.samples.length : 0 ]] samples</span>
+                                    <span>[[ ds.samples_count ]] samples</span>
+                                </div>
+                                <div class="bag-meta-line" v-if="ds.parameters"
+                                    style="font-size: 0.75rem; color: #888; margin-top: 0.2rem;">
+                                    H: [[ ds.parameters.history_duration ]]s @ [[ ds.parameters.history_rate ]]Hz |
+                                    F: [[ ds.parameters.future_duration ]]s @ [[ ds.parameters.future_rate ]]Hz
                                 </div>
                             </div>
+                            <button class="delete-btn" @click.stop="deleteDataset(ds)" title="Delete Dataset">
+                                🗑️
+                            </button>
                         </li>
                     </ul>
                 </div>
 
-                <div class="editor" v-if="currentDataset">
+                <div class="editor" v-if="loadingDataset"
+                    style="display: flex; justify-content: center; align-items: center; height: 100%;">
+                    <div class="loading">Loading dataset...</div>
+                </div>
+
+                <div class="editor" v-else-if="currentDataset">
                     <div style="display: flex; height: 100%;">
                         <!-- Left: Bag List within Dataset -->
                         <div style="width: 200px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: auto;">
@@ -1144,8 +1180,16 @@
 
                         <!-- Right: Visualization -->
                         <div
-                            style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto;">
-                            <div v-if="currentSample" style="width: 100%;">
+                            style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto; position: relative;">
+
+                            <!-- Loading Overlay -->
+                            <div v-if="loadingSample"
+                                style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10; display: flex; justify-content: center; align-items: center;">
+                                <div class="loading">Loading sample...</div>
+                            </div>
+
+                            <div v-if="currentSample" style="width: 100%;"
+                                :style="{ opacity: loadingSample ? 0.3 : 1 }">
                                 <div style="display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem;">
                                     <button @click="prevSample">Previous</button>
                                     <button @click="nextSample">Next</button>
@@ -1158,7 +1202,8 @@
                                         <h4>History</h4>
                                         <div v-for="(img, i) in currentSample.history_images" :key="i"
                                             style="width: 160px; height: 120px; opacity: 0.7;">
-                                            <img :src="`/api/processed_file/${img}`"
+                                            <img :src="`/api/processed_file/${img}`" @load="onImageLoad"
+                                                @error="onImageLoad"
                                                 style="width: 100%; height: 100%; object-fit: contain;">
                                         </div>
                                     </div>
@@ -1169,6 +1214,7 @@
                                         <div
                                             style="width: 320px; height: 240px; border: 2px solid var(--primary-color);">
                                             <img :src="`/api/processed_file/${currentSample.current_image}`"
+                                                @load="onImageLoad" @error="onImageLoad"
                                                 style="width: 100%; height: 100%; object-fit: contain;">
                                         </div>
                                     </div>
@@ -1178,7 +1224,8 @@
                                         <h4>Future</h4>
                                         <div v-for="(img, i) in currentSample.future_images" :key="i"
                                             style="width: 160px; height: 120px; position: relative;">
-                                            <img :src="`/api/processed_file/${img}`"
+                                            <img :src="`/api/processed_file/${img}`" @load="onImageLoad"
+                                                @error="onImageLoad"
                                                 style="width: 100%; height: 100%; object-fit: contain;">
                                             <!-- Overlay Action -->
                                             <div
