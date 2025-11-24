@@ -23,6 +23,9 @@ BAG_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags")
 PROCESSED_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags_processed")
 bridge = CvBridge()
 
+from av_imitation.src.image_processor import ImageProcessor
+processor = ImageProcessor()
+
 def get_bag_info(bag_path):
     reader = SequentialReader()
     storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
@@ -487,6 +490,392 @@ def save_metadata(bag_name):
         json.dump(data, f, indent=2)
         
     return jsonify({"status": "success"})
+
+# Global state for processing jobs
+# Key: bag_name, Value: { "status": "running"|"done"|"error"|"cancelled", "progress": 0, "total": 0, "current": 0, "cancel_flag": False }
+processing_jobs = {}
+
+@app.route('/api/process_bag', methods=['POST'])
+def process_bag():
+    data = request.json
+    bag_name = data.get('bag_name')
+    options = data.get('options', {})
+    
+    if not bag_name:
+        return jsonify({"error": "Bag name required"}), 400
+        
+    bag_path = os.path.join(BAG_DIR, bag_name)
+    if not os.path.exists(bag_path):
+        return jsonify({"error": "Bag not found"}), 404
+        
+    # Determine output folder
+    folder_name = processor.get_output_folder_name(options)
+    output_dir = os.path.join(PROCESSED_DIR, folder_name, bag_name)
+    images_dir = os.path.join(output_dir, "images")
+    
+    if not os.path.exists(images_dir):
+        os.makedirs(images_dir)
+        
+    # Save options
+    with open(os.path.join(output_dir, "options.json"), 'w') as f:
+        json.dump(options, f, indent=2)
+        
+    # Initialize job state
+    processing_jobs[bag_name] = {
+        "status": "running",
+        "progress": 0,
+        "total": 0,
+        "current": 0,
+        "cancel_flag": False
+    }
+        
+    # Run processing
+    import threading
+    thread = threading.Thread(target=run_processing, args=(bag_name, bag_path, images_dir, options))
+    thread.start()
+    
+    return jsonify({"status": "started", "output_dir": output_dir})
+
+@app.route('/api/processing_status/<bag_name>')
+def get_processing_status(bag_name):
+    job = processing_jobs.get(bag_name)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
+
+@app.route('/api/cancel_processing/<bag_name>', methods=['POST'])
+def cancel_processing(bag_name):
+    job = processing_jobs.get(bag_name)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    
+    job['cancel_flag'] = True
+    return jsonify({"status": "cancellation_requested"})
+
+def run_processing(bag_name, bag_path, output_dir, options):
+    print(f"Starting processing for {bag_path} with options {options}")
+    reader = SequentialReader()
+    storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
+    converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
+    
+    try:
+        reader.open(storage_options, converter_options)
+    except Exception as e:
+        print(f"Error opening bag: {e}")
+        processing_jobs[bag_name]['status'] = "error"
+        processing_jobs[bag_name]['error'] = str(e)
+        return
+
+    metadata = reader.get_metadata()
+    
+    # Filter for image topics
+    image_topics = []
+    image_count = 0
+    for t in metadata.topics_with_message_count:
+        if 'image' in t.topic_metadata.name:
+            image_topics.append(t.topic_metadata.name)
+            image_count += t.message_count
+            
+    if not image_topics:
+        print("No image topics found")
+        processing_jobs[bag_name]['status'] = "error"
+        processing_jobs[bag_name]['error'] = "No image topics found"
+        return
+        
+    processing_jobs[bag_name]['total'] = image_count
+        
+    storage_filter = StorageFilter(topics=image_topics)
+    reader.set_filter(storage_filter)
+    
+    msg_type_image = get_message('sensor_msgs/msg/Image')
+    msg_type_compressed = get_message('sensor_msgs/msg/CompressedImage')
+    
+    count = 0
+    while reader.has_next():
+        # Check cancellation
+        if processing_jobs[bag_name]['cancel_flag']:
+            print(f"Processing cancelled for {bag_name}")
+            processing_jobs[bag_name]['status'] = "cancelled"
+            return
+
+        (topic, data, t) = reader.read_next()
+        t_sec = (t - metadata.starting_time.nanoseconds) / 1e9
+        
+        try:
+            cv_img = None
+            if 'compressed' in topic:
+                msg = deserialize_message(data, msg_type_compressed)
+                np_arr = np.frombuffer(msg.data, np.uint8)
+                cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            else:
+                msg = deserialize_message(data, msg_type_image)
+                cv_img = bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                
+            if cv_img is not None:
+                # Process
+                processed_img = processor.process(cv_img, options)
+                
+                # Save
+                filename = f"{t_sec:.6f}.jpg"
+                cv2.imwrite(os.path.join(output_dir, filename), processed_img)
+                count += 1
+                
+                # Update progress
+                processing_jobs[bag_name]['current'] = count
+                if image_count > 0:
+                    processing_jobs[bag_name]['progress'] = (count / image_count) * 100
+                
+                if count % 100 == 0:
+                    print(f"Processed {count} frames")
+                    
+        except Exception as e:
+            print(f"Error processing frame: {e}")
+            
+    print(f"Finished processing {count} frames")
+    processing_jobs[bag_name]['status'] = "done"
+    processing_jobs[bag_name]['progress'] = 100
+
+@app.route('/api/processed_bags')
+def list_processed_bags():
+    # Structure: PROCESSED_DIR / <options_name> / <bag_name> / images
+    # We want to list unique processed bags available.
+    # Actually, the user selects "processed bags".
+    # A processed bag is defined by (Original Bag Name, Processing Options).
+    # We can list them grouped by options or flat.
+    # Let's return a list of objects: { bag_name, options_name, options, path }
+    
+    results = []
+    if not os.path.exists(PROCESSED_DIR):
+        return jsonify([])
+        
+    for options_name in os.listdir(PROCESSED_DIR):
+        opt_path = os.path.join(PROCESSED_DIR, options_name)
+        if not os.path.isdir(opt_path): continue
+        
+        for bag_name in os.listdir(opt_path):
+            bag_path = os.path.join(opt_path, bag_name)
+            if not os.path.isdir(bag_path): continue
+            
+            # Check for options.json
+            options = {}
+            try:
+                with open(os.path.join(bag_path, "options.json"), 'r') as f:
+                    options = json.load(f)
+            except:
+                pass
+                
+            results.append({
+                "bag_name": bag_name,
+                "options_name": options_name,
+                "options": options,
+                "path": bag_path
+            })
+            
+    return jsonify(results)
+
+@app.route('/api/generate_dataset', methods=['POST'])
+def generate_dataset():
+    data = request.json
+    selected_bags = data.get('selected_bags', []) # List of {path, bag_name, ...}
+    dataset_name = data.get('dataset_name', 'dataset')
+    
+    # Sampling options
+    history_rate = float(data.get('history_rate', 1.0)) # Hz
+    history_duration = float(data.get('history_duration', 1.0)) # seconds
+    future_rate = float(data.get('future_rate', 1.0)) # Hz
+    future_duration = float(data.get('future_duration', 1.0)) # seconds
+    
+    if not selected_bags:
+        return jsonify({"error": "No bags selected"}), 400
+        
+    samples = []
+    
+    for bag_info in selected_bags:
+        bag_path = bag_info['path']
+        bag_name = bag_info['bag_name']
+        images_dir = os.path.join(bag_path, "images")
+        
+        # Load telemetry
+        # Telemetry is stored in PROCESSED_DIR / bag_name_telemetry.json (root of processed dir? or inside?)
+        # In `bag_info` endpoint, we save it to `PROCESSED_DIR / f"{bag_name}_telemetry.json"`.
+        # This is outside the specific processing folder.
+        telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
+        
+        if not os.path.exists(telemetry_path):
+            print(f"Telemetry not found for {bag_name}")
+            continue
+            
+        with open(telemetry_path, 'r') as f:
+            telemetry = json.load(f)
+            
+        # Sort telemetry by time
+        telemetry.sort(key=lambda x: x['time'])
+        telemetry_times = np.array([x['time'] for x in telemetry])
+        
+        # Get available images
+        image_files = sorted([f for f in os.listdir(images_dir) if f.endswith('.jpg')])
+        
+        # Parse timestamps from filenames
+        image_times = []
+        for f in image_files:
+            try:
+                t = float(os.path.splitext(f)[0])
+                image_times.append(t)
+            except:
+                pass
+        
+        image_times = np.array(image_times)
+        
+        # Generate samples
+        # Iterate through images as "current" frame
+        # We need to find history frames and future actions
+        
+        # Convert rates to intervals
+        hist_interval = 1.0 / history_rate
+        fut_interval = 1.0 / future_rate
+        
+        num_hist = int(history_duration * history_rate)
+        num_fut = int(future_duration * future_rate)
+        
+        for i, curr_t in enumerate(image_times):
+            # Current image
+            curr_img_name = f"{curr_t:.6f}.jpg"
+            
+            # Find history images
+            # We want images at t - interval, t - 2*interval, ...
+            # We need to find the closest image for each target time
+            history_images = []
+            valid_sample = True
+            
+            for k in range(num_hist, 0, -1):
+                target_t = curr_t - k * hist_interval
+                # Find closest image
+                idx = (np.abs(image_times - target_t)).argmin()
+                closest_t = image_times[idx]
+                
+                # Check if close enough (e.g. within 0.1s)
+                if abs(closest_t - target_t) > 0.1:
+                    valid_sample = False
+                    break
+                    
+                history_images.append(os.path.join(bag_path, "images", f"{closest_t:.6f}.jpg"))
+                
+            if not valid_sample:
+                continue
+                
+            # Find future actions and images
+            # We want actions at t + interval, t + 2*interval, ...
+            future_actions = []
+            future_images = []
+            
+            for k in range(1, num_fut + 1):
+                target_t = curr_t + k * fut_interval
+                
+                # Find closest telemetry
+                idx = (np.abs(telemetry_times - target_t)).argmin()
+                closest_t = telemetry_times[idx]
+                
+                if abs(closest_t - target_t) > 0.1:
+                    valid_sample = False
+                    break
+                    
+                # Action: [steer, throttle]
+                entry = telemetry[idx]
+                future_actions.append([entry['steer'], entry['throttle']])
+                
+                # Find closest image for visualization
+                img_idx = (np.abs(image_times - target_t)).argmin()
+                closest_img_t = image_times[img_idx]
+                if abs(closest_img_t - target_t) > 0.1:
+                    # If image is missing, maybe just skip image but keep action?
+                    # Or invalidate sample?
+                    # Let's invalidate to be safe for now, or just append None?
+                    # Requirement says "show the future images".
+                    valid_sample = False
+                    break
+                
+                future_images.append(os.path.join(bag_path, "images", f"{closest_img_t:.6f}.jpg"))
+                
+            if not valid_sample:
+                continue
+                
+            # Add sample
+            # Let's make paths relative to PROCESSED_DIR
+            rel_curr = os.path.relpath(os.path.join(images_dir, curr_img_name), PROCESSED_DIR)
+            rel_hist = [os.path.relpath(p, PROCESSED_DIR) for p in history_images]
+            rel_fut = [os.path.relpath(p, PROCESSED_DIR) for p in future_images]
+            
+            samples.append({
+                "bag": bag_name,
+                "timestamp": curr_t,
+                "current_image": rel_curr,
+                "history_images": rel_hist,
+                "future_actions": future_actions,
+                "future_images": rel_fut
+            })
+            
+    # Save metadata
+    output_file = os.path.join(PROCESSED_DIR, f"{dataset_name}.json")
+    meta = {
+        "root_dir": PROCESSED_DIR,
+        "dataset_name": dataset_name,
+        "parameters": {
+            "history_rate": history_rate,
+            "history_duration": history_duration,
+            "future_rate": future_rate,
+            "future_duration": future_duration
+        },
+        "samples": samples
+    }
+    
+    with open(output_file, 'w') as f:
+        json.dump(meta, f, indent=2)
+        
+    return jsonify({"status": "success", "file": output_file, "count": len(samples)})
+
+@app.route('/api/datasets')
+def list_datasets():
+    if not os.path.exists(PROCESSED_DIR):
+        return jsonify([])
+        
+    datasets = []
+    for f in os.listdir(PROCESSED_DIR):
+        if f.endswith('.json') and not f.endswith('_telemetry.json') and not f.endswith('options.json'):
+            # It's likely a dataset metadata file
+            # Check content to be sure?
+            try:
+                with open(os.path.join(PROCESSED_DIR, f), 'r') as file:
+                    data = json.load(file)
+                    if 'dataset_name' in data:
+                        datasets.append(data['dataset_name'])
+            except:
+                pass
+                
+    return jsonify(datasets)
+
+@app.route('/api/dataset/<name>')
+def get_dataset(name):
+    path = os.path.join(PROCESSED_DIR, f"{name}.json")
+    if not os.path.exists(path):
+        return jsonify({"error": "Dataset not found"}), 404
+        
+    with open(path, 'r') as f:
+        data = json.load(f)
+        
+    return jsonify(data)
+
+@app.route('/api/processed_file/<path:filepath>')
+def serve_processed_file(filepath):
+    # Serve file from PROCESSED_DIR
+    # Security check: ensure it's within PROCESSED_DIR
+    full_path = os.path.join(PROCESSED_DIR, filepath)
+    if not os.path.abspath(full_path).startswith(os.path.abspath(PROCESSED_DIR)):
+         return "Access denied", 403
+         
+    if not os.path.exists(full_path):
+        return "File not found", 404
+        
+    return send_file(full_path)
 
 def main():
     rclpy.init()

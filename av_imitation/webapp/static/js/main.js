@@ -140,6 +140,45 @@ createApp({
         const cuts = ref([]); // Array of {start, end}
         const activeCutStart = ref(null);
 
+        // Navigation State
+        const currentStep = ref(1);
+
+        // Processing State
+        const processingBag = ref("");
+        const options = ref({
+            resize: false,
+            width: 320,
+            height: 240,
+            channels: 'rgb',
+            canny: false,
+            sam3: false,
+            depth: false
+        });
+        const isProcessing = ref(false);
+        const processingStatus = ref("");
+
+        // Dataset Builder State
+        const processedBags = ref([]);
+        const loadingProcessedBags = ref(false);
+        const selectedProcessedBags = ref([]);
+        const datasetName = ref("dataset_v1");
+        const datasetOptions = ref({
+            historyRate: 10.0,
+            historyDuration: 1.0,
+            futureRate: 10.0,
+            futureDuration: 2.0
+        });
+        const isGenerating = ref(false);
+        const generationStatus = ref("");
+
+        // Visualization State
+        const datasets = ref([]);
+        const loadingDatasets = ref(false);
+        const selectedDataset = ref(null);
+        const datasetData = ref(null);
+        const currentVizBag = ref(null);
+        const currentSampleIndex = ref(0);
+
         const timeline = ref(null);
         const timelineScrollContainer = ref(null);
         const timelineContent = ref(null);
@@ -895,6 +934,243 @@ createApp({
             }
         });
 
+        const processingProgress = ref(0);
+        const processingTotal = ref(0);
+        const processingCurrent = ref(0);
+        let processingPollInterval = null;
+
+        const pollProcessingStatus = async () => {
+            if (!processingBag.value) return;
+
+            try {
+                const res = await fetch(`/api/processing_status/${processingBag.value}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    processingProgress.value = data.progress;
+                    processingTotal.value = data.total;
+                    processingCurrent.value = data.current;
+
+                    if (data.status === 'done') {
+                        processingStatus.value = "Processing complete!";
+                        isProcessing.value = false;
+                        clearInterval(processingPollInterval);
+                    } else if (data.status === 'error') {
+                        processingStatus.value = "Error: " + data.error;
+                        isProcessing.value = false;
+                        clearInterval(processingPollInterval);
+                    } else if (data.status === 'cancelled') {
+                        processingStatus.value = "Processing cancelled.";
+                        isProcessing.value = false;
+                        clearInterval(processingPollInterval);
+                    } else {
+                        processingStatus.value = `Processing... ${data.current}/${data.total} (${data.progress.toFixed(1)}%)`;
+                    }
+                }
+            } catch (e) {
+                console.error("Error polling status", e);
+            }
+        };
+
+        const startProcessing = async () => {
+            if (!currentBag.value) return;
+
+            isProcessing.value = true;
+            processingStatus.value = "Starting processing...";
+            processingProgress.value = 0;
+            processingBag.value = currentBag.value; // Keep track of which bag is processing
+
+            const payload = {
+                bag_name: currentBag.value,
+                options: {
+                    channels: options.value.channels,
+                    canny: options.value.canny,
+                    sam3: options.value.sam3,
+                    depth: options.value.depth
+                }
+            };
+
+            if (options.value.resize) {
+                payload.options.resolution = [options.value.width, options.value.height];
+            }
+
+            try {
+                const res = await fetch('/api/process_bag', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    processingStatus.value = "Error: " + data.error;
+                    isProcessing.value = false;
+                } else {
+                    processingStatus.value = `Processing started...`;
+                    // Start polling
+                    if (processingPollInterval) clearInterval(processingPollInterval);
+                    processingPollInterval = setInterval(pollProcessingStatus, 1000);
+                }
+            } catch (e) {
+                console.error("Processing error", e);
+                processingStatus.value = "Error starting processing.";
+                isProcessing.value = false;
+            }
+        };
+
+        const cancelProcessing = async () => {
+            if (!processingBag.value) return;
+            try {
+                await fetch(`/api/cancel_processing/${processingBag.value}`, { method: 'POST' });
+                processingStatus.value = "Cancelling...";
+            } catch (e) {
+                console.error("Error cancelling", e);
+            }
+        };
+
+        const fetchProcessedBags = async () => {
+            loadingProcessedBags.value = true;
+            try {
+                const res = await fetch('/api/processed_bags');
+                processedBags.value = await res.json();
+            } catch (e) {
+                console.error("Failed to load processed bags", e);
+            } finally {
+                loadingProcessedBags.value = false;
+            }
+        };
+
+        // Watch step change to load processed bags
+        watch(currentStep, (newStep) => {
+            if (newStep === 2 || newStep === 1) {
+                fetchProcessedBags();
+            }
+        });
+
+        const currentBagProcessedList = computed(() => {
+            if (!currentBag.value || !processedBags.value) return [];
+            return processedBags.value.filter(b => b.bag_name === currentBag.value);
+        });
+
+        const generateDataset = async () => {
+            if (selectedProcessedBags.value.length === 0) return;
+
+            isGenerating.value = true;
+            generationStatus.value = "Generating dataset...";
+
+            const payload = {
+                selected_bags: selectedProcessedBags.value,
+                dataset_name: datasetName.value,
+                history_rate: datasetOptions.value.historyRate,
+                history_duration: datasetOptions.value.historyDuration,
+                future_rate: datasetOptions.value.futureRate,
+                future_duration: datasetOptions.value.futureDuration
+            };
+
+            try {
+                const res = await fetch('/api/generate_dataset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    generationStatus.value = "Error: " + data.error;
+                } else {
+                    generationStatus.value = `Success! Generated ${data.count} samples in ${data.file}`;
+                }
+            } catch (e) {
+                console.error("Generation error", e);
+                generationStatus.value = "Error generating dataset.";
+            } finally {
+                isGenerating.value = false;
+            }
+        };
+
+        // Visualization Logic
+        const fetchDatasets = async () => {
+            loadingDatasets.value = true;
+            try {
+                const res = await fetch('/api/datasets');
+                datasets.value = await res.json();
+            } catch (e) {
+                console.error("Failed to load datasets", e);
+            } finally {
+                loadingDatasets.value = false;
+            }
+        };
+
+        watch(currentStep, (newStep) => {
+            if (newStep === 3) {
+                fetchDatasets();
+            }
+        });
+
+        const selectDataset = async (ds) => {
+            const name = ds.dataset_name || ds;
+            try {
+                const res = await fetch(`/api/dataset/${name}`);
+                datasetData.value = await res.json();
+                selectedDataset.value = ds;
+                currentVizBag.value = null;
+                currentSampleIndex.value = 0;
+            } catch (e) {
+                console.error("Failed to load dataset", e);
+            }
+        };
+
+        const datasetBags = computed(() => {
+            if (!datasetData.value) return [];
+            const bags = new Set();
+            datasetData.value.samples.forEach(s => bags.add(s.bag));
+            return Array.from(bags).sort();
+        });
+
+        const datasetParams = computed(() => {
+            return datasetData.value ? datasetData.value.parameters : {};
+        });
+
+        const vizSamples = computed(() => {
+            if (!datasetData.value || !currentVizBag.value) return [];
+            return datasetData.value.samples.filter(s => s.bag === currentVizBag.value);
+        });
+
+        const currentSample = computed(() => {
+            if (vizSamples.value.length === 0) return null;
+            return vizSamples.value[currentSampleIndex.value];
+        });
+
+        const selectDatasetBag = (bagName) => {
+            currentVizBag.value = bagName;
+            currentSampleIndex.value = 0;
+        };
+
+        const selectSample = (idx) => {
+            currentSampleIndex.value = idx;
+        };
+
+        const nextSample = () => {
+            if (currentSampleIndex.value < vizSamples.value.length - 1) {
+                currentSampleIndex.value++;
+            }
+        };
+
+        const prevSample = () => {
+            if (currentSampleIndex.value > 0) {
+                currentSampleIndex.value--;
+            }
+        };
+
+        const getSteerStyle = (val) => {
+            // val is steer, -1 to 1. Center 50%.
+            const pct = Math.abs(val) * 50;
+            const left = val < 0 ? 50 - pct : 50;
+            return {
+                left: `${left}%`,
+                width: `${pct}%`
+            };
+        };
+
         return {
             bags,
             currentBag,
@@ -978,7 +1254,48 @@ createApp({
             },
             // Telemetry
             currentTelemetry,
-            getBarStyle
+            getBarStyle,
+            // Navigation
+            currentStep,
+
+            // Processing
+            processingBag,
+            options,
+            isProcessing,
+            processingStatus,
+            processingProgress,
+            processingTotal,
+            processingCurrent,
+            startProcessing,
+            cancelProcessing,
+            currentBagProcessedList,
+
+            // Dataset Builder
+            processedBags,
+            loadingProcessedBags,
+            selectedProcessedBags,
+            datasetName,
+            datasetOptions,
+            isGenerating,
+            generationStatus,
+            generateDataset,
+
+            // Visualization
+            datasets,
+            loadingDatasets,
+            selectedDataset,
+            selectDataset,
+            datasetBags,
+            currentVizBag,
+            vizSamples,
+            currentSampleIndex,
+            currentSample,
+            datasetParams,
+            getSteerStyle,
+            selectDatasetBag,
+            selectSample,
+            nextSample,
+            prevSample
         };
     }
 }).mount('#app');
