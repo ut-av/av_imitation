@@ -1212,10 +1212,13 @@ createApp({
                 const originalBag = bags.value.find(b => b.name === pBag.bag_name);
                 return {
                     ...pBag,
-                    duration: originalBag ? originalBag.duration : 0,
-                    start_time: originalBag ? originalBag.start_time : 0,
+                    duration: originalBag?.duration || 0,
+                    start_time: originalBag?.start_time || 0,
                     image_count: originalBag ? originalBag.image_count : 0
                 };
+            }).sort((a, b) => {
+                // Sort by start_time descending (newest first)
+                return b.start_time - a.start_time;
             });
         });
 
