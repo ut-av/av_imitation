@@ -1005,181 +1005,200 @@
                 <div class="editor" v-else>
                     <div style="margin: auto; color: var(--text-muted);">Select a bag file to begin</div>
                 </div>
-        </main>
-
-        <!-- Step 2: Dataset Builder -->
-        <div class="step-container" v-if="currentStep === 2">
-            <div class="step-content" style="max-width: 800px; margin: 0 auto;">
-                <h2>Dataset Builder</h2>
-                <p class="text-muted">Create a dataset from processed bags.</p>
-
-                <div class="form-group" style="margin-top: 2rem;">
-                    <label>Dataset Name:</label>
-                    <input type="text" v-model="datasetName"
-                        style="width: 100%; padding: 0.5rem; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px;">
-                </div>
-
-                <div class="options-grid"
-                    style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 2rem;">
-                    <div class="option-card" style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px;">
-                        <h3>History Sampling</h3>
-                        <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-                            <div>
-                                <label>Rate (Hz):</label>
-                                <input type="number" v-model.number="historyRate"
-                                    style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
-                            </div>
-                            <div>
-                                <label>Duration (s):</label>
-                                <input type="number" v-model.number="historyDuration"
-                                    style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="option-card" style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px;">
-                        <h3>Future Sampling</h3>
-                        <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
-                            <div>
-                                <label>Rate (Hz):</label>
-                                <input type="number" v-model.number="futureRate"
-                                    style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
-                            </div>
-                            <div>
-                                <label>Duration (s):</label>
-                                <input type="number" v-model.number="futureDuration"
-                                    style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="form-group" style="margin-top: 2rem;">
-                    <h3>Select Processed Bags</h3>
-                    <div v-if="loadingProcessedBags" class="loading">Loading...</div>
-                    <div
-                        style="max-height: 300px; overflow-y: auto; background: #2c2c2c; padding: 1rem; border-radius: 4px; margin-top: 0.5rem;">
-                        <div v-for="bag in processedBags" :key="bag.path"
-                            style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-                            <input type="checkbox" :value="bag" v-model="selectedProcessedBags"
-                                style="margin-right: 1rem;">
-                            <div>
-                                <div style="font-weight: 500;">[[ bag.bag_name ]]</div>
-                                <div style="font-size: 0.8rem; color: #aaa;">[[ bag.options_name ]]</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div style="margin-top: 2rem; text-align: right;">
-                    <button @click="generateDataset" :disabled="selectedProcessedBags.length === 0 || isGenerating"
-                        style="padding: 1rem 2rem; font-size: 1.1rem;">
-                        [[ isGenerating ? 'Generating...' : 'Generate Dataset' ]]
-                    </button>
-                </div>
-
-                <div v-if="generationStatus"
-                    style="margin-top: 1rem; padding: 1rem; background: #333; border-radius: 4px;">
-                    [[ generationStatus ]]
-                </div>
-            </div>
-        </div>
-
-        <!-- Step 3: Visualization -->
-        <div class="step-container" v-if="currentStep === 3" style="display: flex; flex-direction: column;">
-            <div class="sidebar">
-                <h3>Datasets</h3>
-                <div v-if="loadingDatasets" class="loading">Loading...</div>
-                <ul class="bag-list">
-                    <li v-for="ds in datasets" :key="ds.dataset_name" class="bag-item"
-                        :class="{ active: currentDataset && currentDataset.dataset_name === ds.dataset_name }"
-                        @click="selectDataset(ds)">
-                        <div class="bag-info">
-                            <div class="bag-name-full">[[ ds.dataset_name ]]</div>
-                            <div class="bag-meta-line">
-                                <span>[[ ds.samples ? ds.samples.length : 0 ]] samples</span>
-                            </div>
-                        </div>
-                    </li>
-                </ul>
             </div>
 
-            <div class="editor" v-if="currentDataset">
-                <div style="display: flex; height: 100%;">
-                    <!-- Left: Bag List within Dataset -->
-                    <div style="width: 200px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: auto;">
-                        <div v-for="bagName in datasetBags" :key="bagName"
-                            style="padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #333;"
-                            :style="{ background: currentDatasetBag === bagName ? '#333' : 'transparent' }"
-                            @click="selectDatasetBag(bagName)">
-                            [[ bagName ]]
-                        </div>
+            <!-- Step 2: Dataset Builder -->
+            <div class="step-container" v-if="currentStep === 2">
+                <div class="step-content" style="max-width: 800px; margin: 0 auto;">
+                    <h2>Dataset Builder</h2>
+                    <p class="text-muted">Create a dataset from processed bags.</p>
+
+                    <div class="form-group" style="margin-top: 2rem;">
+                        <label>Dataset Name:</label>
+                        <input type="text" v-model="datasetName"
+                            style="width: 100%; padding: 0.5rem; background: #333; color: #fff; border: 1px solid #555; border-radius: 4px;">
                     </div>
 
-                    <!-- Middle: Sample List -->
-                    <div style="width: 150px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: auto;">
-                        <div v-for="(sample, idx) in datasetSamples" :key="idx"
-                            style="padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #333; font-size: 0.8rem;"
-                            :style="{ background: currentSampleIndex === idx ? '#333' : 'transparent' }"
-                            @click="selectSample(idx)">
-                            [[ sample.timestamp.toFixed(3) ]]s
-                        </div>
-                    </div>
-
-                    <!-- Right: Visualization -->
-                    <div
-                        style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto;">
-                        <div v-if="currentSample" style="width: 100%;">
-                            <div style="display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem;">
-                                <button @click="prevSample">Previous</button>
-                                <button @click="nextSample">Next</button>
+                    <div class="options-grid"
+                        style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 2rem;">
+                        <div class="option-card" style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px;">
+                            <h3>History Sampling</h3>
+                            <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
+                                <div>
+                                    <label>Rate (Hz):</label>
+                                    <input type="number" v-model.number="datasetOptions.historyRate"
+                                        style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
+                                </div>
+                                <div>
+                                    <label>Duration (s):</label>
+                                    <input type="number" v-model.number="datasetOptions.historyDuration"
+                                        style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
+                                </div>
                             </div>
+                        </div>
 
-                            <div style="display: flex; gap: 1rem; justify-content: center; align-items: flex-start;">
-                                <!-- History -->
-                                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                    <h4>History</h4>
-                                    <div v-for="(img, i) in currentSample.history_images" :key="i"
-                                        style="width: 160px; height: 120px; opacity: 0.7;">
-                                        <img :src="`/api/processed_file/${img}`"
-                                            style="width: 100%; height: 100%; object-fit: contain;">
-                                    </div>
+                        <div class="option-card" style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px;">
+                            <h3>Future Sampling</h3>
+                            <div style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1rem;">
+                                <div>
+                                    <label>Rate (Hz):</label>
+                                    <input type="number" v-model.number="datasetOptions.futureRate"
+                                        style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
+                                </div>
+                                <div>
+                                    <label>Duration (s):</label>
+                                    <input type="number" v-model.number="datasetOptions.futureDuration"
+                                        style="width: 60px; padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff;">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 2rem;">
+                        <h3>Select Processed Bags</h3>
+                        <div v-if="loadingProcessedBags" class="loading">Loading...</div>
+                        <div
+                            style="max-height: 300px; overflow-y: auto; background: #2c2c2c; padding: 1rem; border-radius: 4px; margin-top: 0.5rem;">
+                            <div v-for="bag in processedBags" :key="bag.path"
+                                style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+                                <input type="checkbox" :value="bag" v-model="selectedProcessedBags"
+                                    style="margin-right: 1rem;">
+                                <div>
+                                    <div style="font-weight: 500;">[[ bag.bag_name ]]</div>
+                                    <div style="font-size: 0.8rem; color: #aaa;">[[ bag.options_name ]]</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 2rem;">
+                        <h3>Dataset Statistics</h3>
+                        <div style="background: #2c2c2c; padding: 1rem; border-radius: 4px; display: flex; gap: 2rem;">
+                            <div>
+                                <div style="font-size: 0.9rem; color: #aaa;">Total Duration</div>
+                                <div style="font-size: 1.2rem; font-weight: 500;">[[ datasetStats.formattedDuration ]]
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.9rem; color: #aaa;">Total Examples</div>
+                                <div style="font-size: 1.2rem; font-weight: 500;">[[
+                                    datasetStats.examples.toLocaleString() ]]</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 2rem; text-align: right;">
+                        <button @click="generateDataset" :disabled="selectedProcessedBags.length === 0 || isGenerating"
+                            style="padding: 1rem 2rem; font-size: 1.1rem;">
+                            [[ isGenerating ? 'Generating...' : 'Generate Dataset' ]]
+                        </button>
+                    </div>
+
+                    <div v-if="generationStatus"
+                        style="margin-top: 1rem; padding: 1rem; background: #333; border-radius: 4px;">
+                        [[ generationStatus ]]
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: Visualization -->
+            <div class="step-container" v-if="currentStep === 3" style="display: flex; flex-direction: column;">
+                <div class="sidebar">
+                    <h3>Datasets</h3>
+                    <div v-if="loadingDatasets" class="loading">Loading...</div>
+                    <ul class="bag-list">
+                        <li v-for="ds in datasets" :key="ds.dataset_name" class="bag-item"
+                            :class="{ active: currentDataset && currentDataset.dataset_name === ds.dataset_name }"
+                            @click="selectDataset(ds)">
+                            <div class="bag-info">
+                                <div class="bag-name-full">[[ ds.dataset_name ]]</div>
+                                <div class="bag-meta-line">
+                                    <span>[[ ds.samples ? ds.samples.length : 0 ]] samples</span>
+                                </div>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="editor" v-if="currentDataset">
+                    <div style="display: flex; height: 100%;">
+                        <!-- Left: Bag List within Dataset -->
+                        <div style="width: 200px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: auto;">
+                            <div v-for="bagName in datasetBags" :key="bagName"
+                                style="padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #333;"
+                                :style="{ background: currentDatasetBag === bagName ? '#333' : 'transparent' }"
+                                @click="selectDatasetBag(bagName)">
+                                [[ bagName ]]
+                            </div>
+                        </div>
+
+                        <!-- Middle: Sample List -->
+                        <div style="width: 150px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: auto;">
+                            <div v-for="(sample, idx) in datasetSamples" :key="idx"
+                                style="padding: 0.5rem; cursor: pointer; border-bottom: 1px solid #333; font-size: 0.8rem;"
+                                :style="{ background: currentSampleIndex === idx ? '#333' : 'transparent' }"
+                                @click="selectSample(idx)">
+                                [[ sample.timestamp.toFixed(3) ]]s
+                            </div>
+                        </div>
+
+                        <!-- Right: Visualization -->
+                        <div
+                            style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto;">
+                            <div v-if="currentSample" style="width: 100%;">
+                                <div style="display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem;">
+                                    <button @click="prevSample">Previous</button>
+                                    <button @click="nextSample">Next</button>
                                 </div>
 
-                                <!-- Current -->
-                                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                    <h4>Current</h4>
-                                    <div style="width: 320px; height: 240px; border: 2px solid var(--primary-color);">
-                                        <img :src="`/api/processed_file/${currentSample.current_image}`"
-                                            style="width: 100%; height: 100%; object-fit: contain;">
+                                <div
+                                    style="display: flex; gap: 1rem; justify-content: center; align-items: flex-start;">
+                                    <!-- History -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                        <h4>History</h4>
+                                        <div v-for="(img, i) in currentSample.history_images" :key="i"
+                                            style="width: 160px; height: 120px; opacity: 0.7;">
+                                            <img :src="`/api/processed_file/${img}`"
+                                                style="width: 100%; height: 100%; object-fit: contain;">
+                                        </div>
                                     </div>
-                                </div>
 
-                                <!-- Future -->
-                                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                    <h4>Future</h4>
-                                    <div v-for="(img, i) in currentSample.future_images" :key="i"
-                                        style="width: 160px; height: 120px; position: relative;">
-                                        <img :src="`/api/processed_file/${img}`"
-                                            style="width: 100%; height: 100%; object-fit: contain;">
-                                        <!-- Overlay Action -->
+                                    <!-- Current -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                        <h4>Current</h4>
                                         <div
-                                            style="position: absolute; bottom: 0; left: 0; right: 0; height: 20px; background: rgba(0,0,0,0.5); display: flex;">
-                                            <div style="flex: 1; position: relative; border-right: 1px solid #555;">
-                                                <!-- Steer -->
-                                                <div
-                                                    style="position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #555;">
-                                                </div>
-                                                <div :style="getSteerStyle(currentSample.future_actions[i][0])"
-                                                    style="position: absolute; top: 2px; bottom: 2px; background: var(--primary-color);">
-                                                </div>
-                                            </div>
-                                            <div style="flex: 1; position: relative;">
-                                                <!-- Throttle -->
-                                                <div
-                                                    style="position: absolute; top: 0; bottom: 0; left: 0; width: 100%; background: #333;">
+                                            style="width: 320px; height: 240px; border: 2px solid var(--primary-color);">
+                                            <img :src="`/api/processed_file/${currentSample.current_image}`"
+                                                style="width: 100%; height: 100%; object-fit: contain;">
+                                        </div>
+                                    </div>
+
+                                    <!-- Future -->
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                        <h4>Future</h4>
+                                        <div v-for="(img, i) in currentSample.future_images" :key="i"
+                                            style="width: 160px; height: 120px; position: relative;">
+                                            <img :src="`/api/processed_file/${img}`"
+                                                style="width: 100%; height: 100%; object-fit: contain;">
+                                            <!-- Overlay Action -->
+                                            <div
+                                                style="position: absolute; bottom: 0; left: 0; right: 0; height: 20px; background: rgba(0,0,0,0.5); display: flex;">
+                                                <div style="flex: 1; position: relative; border-right: 1px solid #555;">
+                                                    <!-- Steer -->
                                                     <div
-                                                        :style="{ width: (currentSample.future_actions[i][1] * 100) + '%', height: '100%', background: 'var(--secondary-color)' }">
+                                                        style="position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #555;">
+                                                    </div>
+                                                    <div :style="getSteerStyle(currentSample.future_actions[i][0])"
+                                                        style="position: absolute; top: 2px; bottom: 2px; background: var(--primary-color);">
+                                                    </div>
+                                                </div>
+                                                <div style="flex: 1; position: relative;">
+                                                    <!-- Throttle -->
+                                                    <div
+                                                        style="position: absolute; top: 0; bottom: 0; left: 0; width: 100%; background: #333;">
+                                                        <div
+                                                            :style="{ width: (currentSample.future_actions[i][1] * 100) + '%', height: '100%', background: 'var(--secondary-color)' }">
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1190,11 +1209,11 @@
                         </div>
                     </div>
                 </div>
+                <div class="editor" v-else>
+                    <div style="margin: auto; color: var(--text-muted);">Select a dataset to visualize</div>
+                </div>
             </div>
-            <div class="editor" v-else>
-                <div style="margin: auto; color: var(--text-muted);">Select a dataset to visualize</div>
-            </div>
-        </div>
+        </main>
 
         <!-- Settings Panel -->
         <div class="overlay" v-if="showSettings" @click="showSettings = false"></div>

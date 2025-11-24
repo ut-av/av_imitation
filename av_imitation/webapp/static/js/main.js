@@ -1230,6 +1230,52 @@ createApp({
             };
         };
 
+
+        const datasetStats = computed(() => {
+            let totalDuration = 0;
+            let totalExamples = 0;
+
+            // Iterate over selected processed bags
+            // selectedProcessedBags contains the bag names (or objects?)
+            // In the UI: <input type="checkbox" :value="bag" v-model="selectedProcessedBags">
+            // So it contains the bag objects from `processedBags`.
+
+            selectedProcessedBags.value.forEach(pBag => {
+                // pBag has { bag_name, options_name, options, path }
+                // We need to find the original bag info to get duration and image count
+                // We can find it in `bags` array
+                const originalBag = bags.value.find(b => b.name === pBag.bag_name);
+                if (originalBag) {
+                    totalDuration += originalBag.duration || 0;
+
+                    // Calculate examples
+                    // Frame rate = image_count / duration
+                    // Valid duration = duration - history - future
+                    // Examples = valid_duration * frame_rate
+
+                    const duration = originalBag.duration || 0;
+                    const imageCount = originalBag.image_count || 0;
+
+                    if (duration > 0 && imageCount > 0) {
+                        const frameRate = imageCount / duration;
+                        const historyDuration = datasetOptions.value.historyDuration || 0;
+                        const futureDuration = datasetOptions.value.futureDuration || 0;
+
+                        const validDuration = Math.max(0, duration - historyDuration - futureDuration);
+                        const examples = Math.floor(validDuration * frameRate);
+
+                        totalExamples += examples;
+                    }
+                }
+            });
+
+            return {
+                duration: totalDuration,
+                examples: totalExamples,
+                formattedDuration: new Date(totalDuration * 1000).toISOString().substr(11, 8) // HH:MM:SS
+            };
+        });
+
         return {
             bags,
             currentBag,
@@ -1355,7 +1401,8 @@ createApp({
             selectDatasetBag,
             selectSample,
             nextSample,
-            prevSample
+            prevSample,
+            datasetStats
         };
     }
 }).mount('#app');

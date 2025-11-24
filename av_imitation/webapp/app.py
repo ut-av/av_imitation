@@ -96,6 +96,14 @@ def list_bags():
                                     bag_data["duration"] = duration_ns / 1e9
                                 if "start_time" not in bag_data:
                                     bag_data["start_time"] = start_time_ns / 1e9
+                                    
+                                # Extract image count
+                                image_count = 0
+                                topics = meta_yaml['rosbag2_bagfile_information']['topics_with_message_count']
+                                for t in topics:
+                                    if 'image' in t['topic_metadata']['name']:
+                                        image_count += t['message_count']
+                                bag_data["image_count"] = image_count
                     except Exception as e:
                         print(f"Error reading metadata.yaml for {item}: {e}")
 
