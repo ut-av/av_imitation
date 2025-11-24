@@ -835,7 +835,9 @@
                                 :style="{ opacity: bufferingProgress < 100 ? 0.5 : 1, cursor: bufferingProgress < 100 ? 'not-allowed' : 'pointer' }">
                                 [[ bufferingProgress < 100 ? `Buffering ${bufferingProgress}%` : (isPlaying ? 'Pause'
                                     : 'Play' ) ]] </button>
-                                    <button class="secondary" @click="markStart">Mark Cut Start [</button>
+                                    <button class="secondary" @click="markStart" :disabled="activeCutStart !== null"
+                                        :style="{ opacity: activeCutStart !== null ? 0.5 : 1, cursor: activeCutStart !== null ? 'not-allowed' : 'pointer' }">Mark
+                                        Cut Start [</button>
                                     <button class="secondary" @click="markEnd">Mark Cut End ]</button>
                                     <button class="danger" @click="clearCuts">Clear Cuts</button>
                                     <button class="secondary" @click="resetCuts"
@@ -878,15 +880,15 @@
                                     <div v-for="(cut, index) in cuts" :key="index" class="timeline-segment"
                                         :class="{ selected: selectedCutIndex === index }" :style="getSegmentStyle(cut)"
                                         @click.stop="selectCut(index, null)"
-                                        @contextmenu.prevent="handleRightClick(index)">
+                                        @contextmenu.prevent="handleRightClick(index, $event)">
 
                                         <!-- Handles -->
                                         <div class="segment-handle start"
                                             :class="{ active: selectedCutIndex === index && selectedHandle === 'start' }"
-                                            @click.stop="selectCut(index, 'start')"></div>
+                                            @mousedown.stop="handleHandleMouseDown(index, 'start', $event)"></div>
                                         <div class="segment-handle end"
                                             :class="{ active: selectedCutIndex === index && selectedHandle === 'end' }"
-                                            @click.stop="selectCut(index, 'end')"></div>
+                                            @mousedown.stop="handleHandleMouseDown(index, 'end', $event)"></div>
                                     </div>
 
                                     <!-- Active cut being drawn -->
@@ -898,6 +900,20 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <!-- Context Menu -->
+                            <div v-if="showContextMenu" :style="{ position: 'fixed', left: contextMenuX + 'px', top: contextMenuY + 'px', 
+                                          background: '#2c2c2c', border: '1px solid #444', borderRadius: '4px',
+                                          boxShadow: '0 4px 8px rgba(0,0,0,0.4)', zIndex: 1000, minWidth: '120px' }"
+                                @click.stop>
+                                <button @click="deleteSelectedCut" style="width: 100%; padding: 0.5rem 1rem; background: transparent; 
+                                               border: none; color: var(--error-color); text-align: left; 
+                                               cursor: pointer; transition: background 0.2s;"
+                                    @mouseover="$event.target.style.background='#3c3c3c'"
+                                    @mouseout="$event.target.style.background='transparent'">
+                                    Delete Cut
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -905,7 +921,7 @@
                         <h3>Metadata</h3>
                         <textarea v-model="description" placeholder="Enter description for this bag file..."></textarea>
                         <br><br>
-                        <button @click="saveMetadata">Save Metadata</button>
+                        <button @click="saveMetadata(true)">Save Metadata</button>
                     </div>
 
                     <div class="metadata-form" style="margin-top: 2rem;">

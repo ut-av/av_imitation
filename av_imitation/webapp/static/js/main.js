@@ -191,6 +191,17 @@ createApp({
         const selectedCutIndex = ref(-1);
         const selectedHandle = ref(null); // 'start' or 'end'
 
+        // Drag state - only active when drag initiated from a handle
+        const isDraggingHandle = ref(false);
+        const draggedCutIndex = ref(-1);
+        const draggedHandleType = ref(null); // 'start' or 'end'
+
+        // Context menu state
+        const showContextMenu = ref(false);
+        const contextMenuX = ref(0);
+        const contextMenuY = ref(0);
+        const contextMenuCutIndex = ref(-1);
+
         // History & Reset
         const history = ref([]);
         const historyIndex = ref(-1);
@@ -595,10 +606,39 @@ createApp({
             selectedHandle.value = handle;
         };
 
-        const handleRightClick = (index) => {
-            pushHistory();
-            cuts.value.splice(index, 1);
-            selectedCutIndex.value = -1;
+        const handleHandleMouseDown = (index, handleType, event) => {
+            event.stopPropagation();
+            event.preventDefault();
+
+            // Initiate drag mode
+            isDraggingHandle.value = true;
+            draggedCutIndex.value = index;
+            draggedHandleType.value = handleType;
+
+            // Select this cut
+            selectedCutIndex.value = index;
+            selectedHandle.value = handleType;
+        };
+
+        const showContextMenuFor = (index, event) => {
+            event.preventDefault();
+            contextMenuX.value = event.clientX;
+            contextMenuY.value = event.clientY;
+            contextMenuCutIndex.value = index;
+            showContextMenu.value = true;
+        };
+
+        const deleteSelectedCut = () => {
+            if (contextMenuCutIndex.value !== -1) {
+                pushHistory();
+                cuts.value.splice(contextMenuCutIndex.value, 1);
+                selectedCutIndex.value = -1;
+            }
+            showContextMenu.value = false;
+        };
+
+        const handleRightClick = (index, event) => {
+            showContextMenuFor(index, event);
         };
 
         // History
@@ -831,7 +871,28 @@ createApp({
 
         const handleMouseMove = (event) => {
             if (event.buttons === 1) { // Dragging
-                seek(event);
+                if (isDraggingHandle.value && draggedCutIndex.value !== -1) {
+                    // Dragging a handle - resize the cut
+                    if (!duration.value) return;
+
+                    const rect = timelineContent.value.getBoundingClientRect();
+                    const x = event.clientX - rect.left;
+                    const time = x / zoomLevel.value;
+                    const clampedTime = Math.max(0, Math.min(duration.value, time));
+
+                    const cut = cuts.value[draggedCutIndex.value];
+
+                    if (draggedHandleType.value === 'start') {
+                        // Move start endpoint
+                        cut.start = Math.min(clampedTime, cut.end);
+                    } else if (draggedHandleType.value === 'end') {
+                        // Move end endpoint
+                        cut.end = Math.max(clampedTime, cut.start);
+                    }
+                } else {
+                    // Normal timeline seek
+                    seek(event);
+                }
             }
         };
 
@@ -869,7 +930,7 @@ createApp({
             };
         };
 
-        const saveMetadata = async () => {
+        const saveMetadata = async (showMessage = false) => {
             if (!currentBag.value) return;
 
             const metadata = {
@@ -886,7 +947,9 @@ createApp({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(metadata)
                 });
-                alert('Metadata saved!');
+                if (showMessage) {
+                    alert('Metadata saved!');
+                }
 
                 // Update local bag list item
                 const bagIndex = bags.value.findIndex(b => b.name === currentBag.value);
@@ -899,7 +962,9 @@ createApp({
 
             } catch (e) {
                 console.error("Failed to save metadata", e);
-                alert('Failed to save metadata');
+                if (showMessage) {
+                    alert('Failed to save metadata');
+                }
             }
         };
 
@@ -945,6 +1010,22 @@ createApp({
             }
         });
 
+        // Global mouseup to end handle dragging
+        window.addEventListener('mouseup', () => {
+            if (isDraggingHandle.value) {
+                // Save history at the end of drag
+                pushHistory();
+                isDraggingHandle.value = false;
+                draggedCutIndex.value = -1;
+                draggedHandleType.value = null;
+            }
+        });
+
+        // Close context menu on click
+        window.addEventListener('click', () => {
+            showContextMenu.value = false;
+        });
+
         const processingProgress = ref(0);
         const processingTotal = ref(0);
         const processingCurrent = ref(0);
@@ -988,6 +1069,18 @@ createApp({
         // Watch options to check for existing processing
         watch(options, () => {
             checkExistingProcessing();
+        }, { deep: true });
+
+        // Auto-save cuts when they change
+        let saveTimeout = null;
+        watch(cuts, () => {
+            // Debounce saves to avoid excessive API calls during drag operations
+            if (!currentBag.value) return;
+
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveMetadata();
+            }, 1000); // Save 1 second after last change
         }, { deep: true });
 
         const pollProcessingStatus = async () => {
@@ -1459,9 +1552,14 @@ createApp({
             handleScroll,
             handleWheel,
             selectCut,
+            handleHandleMouseDown,
             selectedCutIndex,
             selectedHandle,
             handleRightClick,
+            showContextMenu,
+            contextMenuX,
+            contextMenuY,
+            deleteSelectedCut,
             resetCuts,
             undo,
             formatBagDate: (bag) => {
