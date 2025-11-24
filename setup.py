@@ -7,7 +7,7 @@ package_name = 'av_imitation'
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name, f'{package_name}.webapp', f'{package_name}.scripts'],
+    packages=[package_name, f'{package_name}.webapp', f'{package_name}.scripts', f'{package_name}.src'],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
