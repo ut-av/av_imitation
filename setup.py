@@ -7,7 +7,13 @@ package_name = 'av_imitation'
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name, f'{package_name}.webapp', f'{package_name}.scripts', f'{package_name}.src'],
+    packages=[
+        package_name,
+        f'{package_name}.webapp',
+        f'{package_name}.scripts',
+        f'{package_name}.src',
+        f'{package_name}.src.models',
+    ],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -26,6 +32,8 @@ setup(
         'console_scripts': [
             'start_webapp = av_imitation.webapp.app:main',
             'process_bag = av_imitation.scripts.process_bag:main',
+            'export_onnx = av_imitation.scripts.export_onnx:main',
+            'inference = av_imitation.scripts.inference:main',
         ],
     },
 )

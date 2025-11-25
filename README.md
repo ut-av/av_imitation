@@ -24,6 +24,25 @@ ros2 run av_imitation start_webapp
 
 Then, using your computer, connect to the car. For example: [http://orin12:5000](http://orin12:5000)
 
-## Data Processing
+### Clip the Bag
 
-This step will 
+### Aggregate Bags into a Datset
+
+### Visualize the Dataset
+
+## Train a Model
+
+## Convert to onnx
+
+```bash
+ros2 run av_imitation export_onnx --experiment ~/roboracer_ws/data/experiments/exp_name --output model.onnx
+```
+
+## Run the onnx model on the car
+
+```bash
+ros2 run av_imitation inference --ros-args \
+    -p model_path:=/path/to/model.onnx \
+    -p image_topic:=/camera/image_raw \
+    -p drive_topic:=/drive
+```

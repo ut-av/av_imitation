@@ -16,7 +16,7 @@
   <depend>builtin_interfaces</depend>
   <depend>amrl_msgs</depend>
   <depend>ut_automata</depend>
-
+  <depend>ackermann_msgs</depend>
 
   <exec_depend>python3-flask</exec_depend>
   <exec_depend>python3-opencv</exec_depend>

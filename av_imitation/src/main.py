@@ -122,6 +122,23 @@ def train(args):
             model_path = os.path.join(models_dir, "best_model.pth")
             torch.save(model.state_dict(), model_path)
             print(f"Saved best model to {model_path}")
+            
+            # Save training metadata
+            training_meta = {
+                'model_type': args.model,
+                'dataset': args.dataset,
+                'input_channels': input_channels,
+                'input_height': input_shape[2],
+                'input_width': input_shape[3],
+                'output_steps': output_steps,
+                'dropout': args.dropout,
+                'best_val_loss': best_val_loss,
+                'epoch': epoch + 1,
+            }
+            meta_path = os.path.join(models_dir, "training_metadata.json")
+            with open(meta_path, 'w') as f:
+                json.dump(training_meta, f, indent=2)
+            print(f"Saved training metadata to {meta_path}")
         else:
             patience_counter += 1
             

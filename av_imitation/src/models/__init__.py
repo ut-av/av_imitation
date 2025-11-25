@@ -1,3 +1,3 @@
-from .cnn import CNN
-from .mlp import MLP
-from .transformer import Transformer
+from .cnn import CNN, CNNOnnx
+from .mlp import MLP, MLPOnnx
+from .transformer import Transformer, TransformerOnnx
