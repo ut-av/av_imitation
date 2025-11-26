@@ -35,7 +35,7 @@ Then, using your computer, connect to the car. For example: [http://orin12:5000]
 ## Convert to onnx
 
 ```bash
-ros2 run av_imitation export_onnx --experiment ~/roboracer_ws/data/experiments/exp_name --output model.onnx
+ros2 run av_imitation export_onnx --experiment-name 20251124_235857_mlp_outdoor_v1
 ```
 
 ## Run the onnx model on the car
