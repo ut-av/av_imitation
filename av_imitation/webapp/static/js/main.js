@@ -187,10 +187,10 @@ createApp({
         const selectedProcessedBags = ref([]);
         const datasetName = ref("dataset_v1");
         const datasetOptions = ref({
-            historyRate: 10.0,
-            historyDuration: 1.0,
-            futureRate: 10.0,
-            futureDuration: 2.0
+            historyRate: 5.0,
+            historyDuration: 5.0,
+            futureRate: 5.0,
+            futureDuration: 3.0
         });
         const isGenerating = ref(false);
         const generationStatus = ref("");

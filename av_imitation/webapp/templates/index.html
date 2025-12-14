@@ -1115,7 +1115,7 @@
             </div>
 
             <!-- Step 2: Dataset Builder -->
-            <div class="step-container" v-if="currentStep === 2">
+            <div class="step-container" v-if="currentStep === 2" style="overflow-y: auto; display: block;">
                 <div class="step-content" style="max-width: 800px; margin: 0 auto;">
                     <h2>Dataset Builder</h2>
                     <p class="text-muted">Create a dataset from processed bags.</p>
@@ -1171,7 +1171,8 @@
                                 <!-- Thumbnail -->
                                 <div
                                     style="width: 60px; height: 45px; background-color: #000; flex-shrink: 0; overflow: hidden; border-radius: 2px;">
-                                    <img :src="`/api/bag/${pBag.bag_name}/frame/0.0`" loading="lazy" alt="preview"
+                                    <img :src="pBag.thumbnail_path ? `/api/processed_file/${pBag.thumbnail_path}` : `/api/bag/${pBag.bag_name}/frame/0.0`"
+                                        loading="lazy" alt="preview"
                                         style="width: 100%; height: 100%; object-fit: cover;">
                                 </div>
 
@@ -1243,11 +1244,9 @@
                 <!-- Instructions Section -->
                 <div
                     style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px; margin: 1rem; margin-bottom: 0; border-left: 4px solid var(--primary-color); flex-shrink: 0;">
-                    <h3 style="margin-top: 0; margin-bottom: 1rem;">Training on a different machine:</h3>
-
                     <div style="margin-bottom: 1.5rem;">
                         <h4 style="font-size: 0.9rem; color: #aaa; margin-bottom: 0.5rem;">Copy dataset from another
-                            computer:</h4>
+                            computer, run this on the machine you'll use for training:</h4>
                         <div
                             style="background: #1e1e1e; padding: 0.75rem; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85rem; overflow-x: auto;">
                             <code style="color: #4ec9b0;">rsync -avz
@@ -1260,8 +1259,9 @@
                         <h4 style="font-size: 0.9rem; color: #aaa; margin-bottom: 0.5rem;">Training command:</h4>
                         <div
                             style="background: #1e1e1e; padding: 0.75rem; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85rem; overflow-x: auto;">
-                            <code style="color: #4ec9b0;">python3 src/av_imitation/av_imitation/src/main.py --model cnn
-                                --dataset outdoor_v1 --epochs 10000 --batch-size 32</code>
+                            <code
+                                style="color: #4ec9b0;">python3 src/av_imitation/av_imitation/src/main.py --model cnn
+                                --dataset [[ currentDataset ? currentDataset.dataset_name : '[DATASET NAME]' ]] --epochs 10000 --batch-size 32</code>
                         </div>
                     </div>
                 </div>

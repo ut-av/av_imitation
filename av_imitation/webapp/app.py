@@ -764,12 +764,26 @@ def list_processed_bags():
                     options = json.load(f)
             except:
                 pass
-                
+            
+            # Find a thumbnail
+            thumbnail_path = None
+            images_dir = os.path.join(bag_path, "images")
+            if os.path.exists(images_dir):
+                # Get first jpg
+                images = sorted([f for f in os.listdir(images_dir) if f.endswith('.jpg')])
+                if images:
+                    # Construct relative path for serving
+                    # Route: /api/processed_file/<path>
+                    # Filepath needs to be relative to PROCESSED_DIR
+                    full_img_path = os.path.join(images_dir, images[0])
+                    thumbnail_path = os.path.relpath(full_img_path, PROCESSED_DIR)
+
             results.append({
                 "bag_name": bag_name,
                 "options_name": options_name,
                 "options": options,
-                "path": bag_path
+                "path": bag_path,
+                "thumbnail_path": thumbnail_path
             })
             
     return jsonify(results)
