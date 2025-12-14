@@ -1640,7 +1640,12 @@ createApp({
                 }
 
                 // Fallback to parsing filename
-                const bagName = bag.name || bag;
+                const bagName = bag.name || bag.bag_name || bag;
+
+                if (typeof bagName !== 'string') {
+                    return '';
+                }
+
                 // Expects roboracer_YYYY_MM_DD_HH_MM_SS
                 const parts = bagName.split('_');
                 if (parts.length >= 7 && parts[0] === 'roboracer') {
