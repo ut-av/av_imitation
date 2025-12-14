@@ -41,22 +41,34 @@ def train(args):
     
     # Inspect one sample to determine input/output shapes
     sample_batch = next(iter(train_loader))
-    input_shape = sample_batch['image'].shape # (B, C, H, W)
+    input_shape = sample_batch['image'].shape # (B, T, C, H, W)
+    print(f"Input Shape: {input_shape}")
     action_shape = sample_batch['action'].shape # (B, T, 2)
+    print(f"Action Shape: {action_shape}")
     
-    input_channels = input_shape[1]
+    if len(input_shape) == 5:
+        B, T, C, H, W = input_shape
+    else:
+        # Fallback for legacy or unexpected shapes
+        # Assuming (B, C, H, W) where C includes time
+        raise ValueError(f"Expected 5D input (B, T, C, H, W), got {input_shape}")
+    
     output_steps = action_shape[1]
     
-    print(f"Input Channels: {input_channels}")
+    print(f"Num Frames (T): {T}")
+    print(f"Channels per Frame (C): {C}")
     print(f"Output Steps: {output_steps}")
     
     # Initialize Model
     if args.model == 'cnn':
-        model = CNN(input_channels, output_steps, dropout=args.dropout)
+        # CNN flattens T into channels
+        model = CNN(T * C, output_steps, dropout=args.dropout)
     elif args.model == 'mlp':
-        model = MLP(input_channels, output_steps, dropout=args.dropout)
+        # MLP flattens T into channels/input dim
+        model = MLP(T * C, output_steps, dropout=args.dropout)
     elif args.model == 'transformer':
-        model = Transformer(input_channels, output_steps, dropout=args.dropout)
+        # Transformer handles T internally, takes channels per frame
+        model = Transformer(C, output_steps, dropout=args.dropout)
     else:
         raise ValueError(f"Unknown model type: {args.model}")
         

@@ -10,6 +10,7 @@ class ImageProcessor:
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
     def process(self, image, options):
         """
         Apply a series of transformations to an image.
@@ -53,14 +54,11 @@ class ImageProcessor:
             # Canny returns 1 channel.
             processed = edges
 
-
-
-        # 5. Depth Estimation
+        # 4. Depth Estimation
         if 'depth' in options and options['depth']:
             processed = self.apply_depth(processed)
 
         return processed
-
 
 
     def apply_depth(self, image):
@@ -72,6 +70,7 @@ class ImageProcessor:
         for i in range(h):
             depth_map[i, :] = int(255 * (i / h))
         return depth_map
+
 
     def get_output_folder_name(self, options):
         """

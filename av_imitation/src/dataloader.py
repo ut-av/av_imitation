@@ -104,14 +104,21 @@ class AVDataset(Dataset):
         
         all_imgs = history_imgs + [curr_img]
         # Convert to tensor
-        # Assume standard HWC -> CHW
         tensors = []
         for img in all_imgs:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-            tensors.append(img)
+            # Handle grayscale (H, W) -> (H, W, 1) if needed, or check dimensions
+            if img.ndim == 2:
+                # Grayscale
+                img = img[:, :, np.newaxis]
+            else:
+                # BGR to RGB
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
-        input_tensor = torch.cat(tensors, dim=0) # ( (H+1)*C, H, W )
+            # HWC -> CHW
+            img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+            tensors.append(img_tensor)
+            
+        input_tensor = torch.stack(tensors) # (T, C, H, W)
         
         # Targets
         # Future actions
