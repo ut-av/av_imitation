@@ -154,9 +154,7 @@ createApp({
                 height: 240,
                 channels: 'rgb',
                 canny: false,
-                sam3: false,
-                sam3_prompt: '',
-                sam3_token: '',
+
                 depth: false,
             };
 
@@ -778,9 +776,7 @@ createApp({
                 options: {
                     channels: options.value.channels,
                     canny: options.value.canny,
-                    sam3: options.value.sam3,
-                    sam3_prompt: options.value.sam3_prompt,
-                    sam3_token: options.value.sam3_token,
+
                     depth: options.value.depth
                 }
             };
@@ -1172,7 +1168,7 @@ createApp({
                 options: {
                     channels: options.value.channels,
                     canny: options.value.canny,
-                    sam3: options.value.sam3,
+
                     depth: options.value.depth
                 }
             };
@@ -1268,9 +1264,7 @@ createApp({
                 options: {
                     channels: options.value.channels,
                     canny: options.value.canny,
-                    sam3: options.value.sam3,
-                    sam3_prompt: options.value.sam3_prompt,
-                    sam3_token: options.value.sam3_token,
+
                     depth: options.value.depth
                 }
             };

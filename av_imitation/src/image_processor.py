@@ -2,11 +2,12 @@ import cv2
 import numpy as np
 import os
 import torch
+import traceback
+from PIL import Image
 
 class ImageProcessor:
     def __init__(self):
-        self.sam_model = None
-        self.depth_model = None
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def process(self, image, options):
@@ -16,7 +17,7 @@ class ImageProcessor:
             - resolution: (width, height)
             - channels: 'rgb', 'gray', 'hsv'
             - canny: bool (or dict with thresholds)
-            - sam3: bool
+
             - depth: bool
         """
         processed = image.copy()
@@ -30,10 +31,6 @@ class ImageProcessor:
         if 'channels' in options:
             if options['channels'] == 'gray':
                 processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
-                # Keep it 3 channel for consistency? Or 1?
-                # Usually standardizing on 3 channels is easier for visualization/training unless specified.
-                # But 'gray' implies 1 channel.
-                # Let's keep it 1 channel if requested, but visualization might need handling.
             elif options['channels'] == 'hsv':
                 processed = cv2.cvtColor(processed, cv2.COLOR_BGR2HSV)
             # Default BGR (OpenCV standard)
@@ -56,9 +53,7 @@ class ImageProcessor:
             # Canny returns 1 channel.
             processed = edges
 
-        # 4. SAM3 (Segment Anything)
-        if 'sam3' in options and options['sam3']:
-            processed = self.apply_sam3(processed)
+
 
         # 5. Depth Estimation
         if 'depth' in options and options['depth']:
@@ -66,14 +61,7 @@ class ImageProcessor:
 
         return processed
 
-    def apply_sam3(self, image):
-        # Placeholder for SAM3
-        # In a real implementation, we would load the model and run inference.
-        # Since dependencies might be missing, we'll return a mock or try to load.
-        print("SAM3 processing requested but not fully implemented/installed.")
-        # For now, just draw a overlay to indicate "processed"
-        cv2.putText(image, "SAM3", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        return image
+
 
     def apply_depth(self, image):
         # Placeholder for Depth
@@ -96,8 +84,7 @@ class ImageProcessor:
             parts.append(options['channels'])
         if 'canny' in options and options['canny']:
             parts.append("canny")
-        if 'sam3' in options and options['sam3']:
-            parts.append("sam3")
+
         if 'depth' in options and options['depth']:
             parts.append("depth")
             
