@@ -147,15 +147,39 @@ createApp({
 
         // Processing State
         const processingBag = ref("");
-        const options = ref({
-            resize: false,
-            width: 320,
-            height: 240,
-            channels: 'rgb',
-            canny: false,
-            sam3: false,
-            depth: false
-        });
+        const defaultOptions = (() => {
+            const defaults = {
+                resize: false,
+                width: 320,
+                height: 240,
+                channels: 'rgb',
+                canny: false,
+                sam3: false,
+                sam3_prompt: '',
+                sam3_token: '',
+                depth: false,
+            };
+
+            const saved = localStorage.getItem('processingOptions');
+            if (saved) {
+                try {
+                    const parsed = JSON.parse(saved);
+                    // Merge saved options
+                    return { ...defaults, ...parsed };
+                } catch (e) {
+                    console.error("Failed to parse saved options", e);
+                    return defaults;
+                }
+            }
+            return defaults;
+        })();
+
+        const options = ref(defaultOptions);
+
+        // Persist options
+        watch(options, (newVal) => {
+            localStorage.setItem('processingOptions', JSON.stringify(newVal));
+        }, { deep: true });
         const isProcessing = ref(false);
         const processingStatus = ref("");
 
@@ -735,10 +759,67 @@ createApp({
             }
         };
 
+        const previewImageUrl = ref(null);
+        const previewStatus = ref('');
+
+        const startPreview = async () => {
+            if (!currentBag.value) return;
+
+            if (previewImageUrl.value) {
+                URL.revokeObjectURL(previewImageUrl.value);
+            }
+
+            previewStatus.value = "Generating preview...";
+            previewImageUrl.value = null;
+
+            const payload = {
+                bag_name: currentBag.value,
+                timestamp: currentTime.value,
+                options: {
+                    channels: options.value.channels,
+                    canny: options.value.canny,
+                    sam3: options.value.sam3,
+                    sam3_prompt: options.value.sam3_prompt,
+                    sam3_token: options.value.sam3_token,
+                    depth: options.value.depth
+                }
+            };
+
+            if (options.value.resize) {
+                payload.options.resolution = [options.value.width, options.value.height];
+            }
+
+            try {
+                const res = await fetch('/api/preview_processing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    const blob = await res.blob();
+                    previewImageUrl.value = URL.createObjectURL(blob);
+                    previewStatus.value = "";
+                } else {
+                    const data = await res.json();
+                    previewStatus.value = "Error: " + (data.error || "Unknown error");
+                }
+            } catch (e) {
+                console.error("Preview error", e);
+                previewStatus.value = "Error generating preview.";
+            }
+        };
+
         const selectBag = async (bag) => {
             // bag is now an object
             currentBag.value = bag.name;
             currentTime.value = 0;
+
+            if (previewImageUrl.value) {
+                startPreview();
+            } else {
+                previewStatus.value = '';
+            }
             isPlaying.value = false;
             if (playInterval) clearInterval(playInterval); // Reset play state
 
@@ -1188,6 +1269,8 @@ createApp({
                     channels: options.value.channels,
                     canny: options.value.canny,
                     sam3: options.value.sam3,
+                    sam3_prompt: options.value.sam3_prompt,
+                    sam3_token: options.value.sam3_token,
                     depth: options.value.depth
                 }
             };
@@ -1220,54 +1303,7 @@ createApp({
             }
         };
 
-        const previewImageUrl = ref(null);
-        const previewStatus = ref('');
 
-        const startPreview = async () => {
-            if (!currentBag.value) return;
-
-            if (previewImageUrl.value) {
-                URL.revokeObjectURL(previewImageUrl.value);
-            }
-
-            previewStatus.value = "Generating preview...";
-            previewImageUrl.value = null;
-
-            const payload = {
-                bag_name: currentBag.value,
-                timestamp: currentTime.value,
-                options: {
-                    channels: options.value.channels,
-                    canny: options.value.canny,
-                    sam3: options.value.sam3,
-                    depth: options.value.depth
-                }
-            };
-
-            if (options.value.resize) {
-                payload.options.resolution = [options.value.width, options.value.height];
-            }
-
-            try {
-                const res = await fetch('/api/preview_processing', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                if (res.ok) {
-                    const blob = await res.blob();
-                    previewImageUrl.value = URL.createObjectURL(blob);
-                    previewStatus.value = "";
-                } else {
-                    const data = await res.json();
-                    previewStatus.value = "Error: " + (data.error || "Unknown error");
-                }
-            } catch (e) {
-                console.error("Preview error", e);
-                previewStatus.value = "Error generating preview.";
-            }
-        };
 
         const cancelProcessing = async () => {
             if (!processingBag.value) return;

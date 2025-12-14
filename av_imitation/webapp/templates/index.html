@@ -1031,7 +1031,18 @@
                                 <h4 style="margin-bottom: 0.5rem;">Filters</h4>
                                 <div style="display: flex; gap: 1.5rem;">
                                     <label><input type="checkbox" v-model="options.canny"> Canny Edge</label>
-                                    <label><input type="checkbox" v-model="options.sam3"> SAM3</label>
+                                    <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                                        <label><input type="checkbox" v-model="options.sam3"> SAM3</label>
+                                        <div v-if="options.sam3"
+                                            style="display: flex; flex-direction: column; gap: 0.5rem; padding-left: 1.5rem;">
+                                            <input type="text" v-model="options.sam3_prompt"
+                                                placeholder="Text Query (e.g. 'car')"
+                                                style="padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff; border-radius: 2px;">
+                                            <input type="password" v-model="options.sam3_token"
+                                                placeholder="HF Token (optional)"
+                                                style="padding: 0.3rem; background: #444; border: 1px solid #555; color: #fff; border-radius: 2px;">
+                                        </div>
+                                    </div>
                                     <label><input type="checkbox" v-model="options.depth"> Depth</label>
                                 </div>
                             </div>
