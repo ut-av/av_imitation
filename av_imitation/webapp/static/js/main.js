@@ -1220,6 +1220,55 @@ createApp({
             }
         };
 
+        const previewImageUrl = ref(null);
+        const previewStatus = ref('');
+
+        const startPreview = async () => {
+            if (!currentBag.value) return;
+
+            if (previewImageUrl.value) {
+                URL.revokeObjectURL(previewImageUrl.value);
+            }
+
+            previewStatus.value = "Generating preview...";
+            previewImageUrl.value = null;
+
+            const payload = {
+                bag_name: currentBag.value,
+                timestamp: currentTime.value,
+                options: {
+                    channels: options.value.channels,
+                    canny: options.value.canny,
+                    sam3: options.value.sam3,
+                    depth: options.value.depth
+                }
+            };
+
+            if (options.value.resize) {
+                payload.options.resolution = [options.value.width, options.value.height];
+            }
+
+            try {
+                const res = await fetch('/api/preview_processing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    const blob = await res.blob();
+                    previewImageUrl.value = URL.createObjectURL(blob);
+                    previewStatus.value = "";
+                } else {
+                    const data = await res.json();
+                    previewStatus.value = "Error: " + (data.error || "Unknown error");
+                }
+            } catch (e) {
+                console.error("Preview error", e);
+                previewStatus.value = "Error generating preview.";
+            }
+        };
+
         const cancelProcessing = async () => {
             if (!processingBag.value) return;
             try {
@@ -1680,6 +1729,9 @@ createApp({
             startProcessing,
             cancelProcessing,
             currentBagProcessedList,
+            startPreview,
+            previewImageUrl,
+            previewStatus,
 
             // Dataset Builder
             processedBags,

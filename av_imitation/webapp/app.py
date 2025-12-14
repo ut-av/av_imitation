@@ -342,37 +342,30 @@ def generate_default_cuts(bag_path):
 
 @app.route('/api/bag/<bag_name>/frame/<float:timestamp>')
 def get_frame(bag_name, timestamp):
+    bag_path = os.path.join(BAG_DIR, bag_name)
+    cv_img = get_cv_image_from_bag(bag_path, timestamp)
+    
+    if cv_img is not None:
+        _, buffer = cv2.imencode('.jpg', cv_img)
+        return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+    
+    return "Frame not found", 404
+
+def get_cv_image_from_bag(bag_path, timestamp):
     # This is inefficient for random access, but simple for now.
     # A better approach would be to index the bag or use a persistent reader with seek if possible.
-    # ROS 2 bag reader doesn't support seek by time easily without re-opening or iterating.
-    # For a "preview", we might just iterate until we find the timestamp.
-    # OPTIMIZATION: Cache the reader or index?
-    # For this prototype, we will just open and seek (iterate).
-    
-    bag_path = os.path.join(BAG_DIR, bag_name)
     reader = SequentialReader()
     storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
     converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
-    reader.open(storage_options, converter_options)
+    try:
+        reader.open(storage_options, converter_options)
+    except Exception as e:
+        print(f"Error opening bag: {e}")
+        return None
     
     metadata = reader.get_metadata()
     start_time_ns = metadata.starting_time.nanoseconds
     target_ns = start_time_ns + int(timestamp * 1e9)
-    
-    # Create a filter for image topics
-    # storage_filter = StorageFilter(topics=['/camera/image_raw', '/camera/image_raw/compressed'])
-    # reader.set_filter(storage_filter) 
-    # set_filter is not directly exposed in simple python wrapper in older versions, check availability.
-    # We'll just skip non-image messages manually.
-    
-    # We'll just skip non-image messages manually.
-
-    
-    # We can't seek directly. We have to read.
-    # To make this faster for the web app, maybe we should extract a low-res video or thumbnails?
-    # Or just accept it might be slow.
-    # Alternatively, we can use the seek interface if available in newer rosbag2_py.
-    # reader.seek(target_ns) # Check if this exists.
     
     try:
         reader.seek(target_ns)
@@ -384,7 +377,6 @@ def get_frame(bag_name, timestamp):
         (topic, data, t) = reader.read_next()
         
         if t >= target_ns:
-            # print(f"Found msg at {t} (target {target_ns}): {topic}")
             if 'image' in topic:
                 msg_type = get_message('sensor_msgs/msg/Image')
                 if 'compressed' in topic:
@@ -400,18 +392,39 @@ def get_frame(bag_name, timestamp):
                         np_arr = np.frombuffer(msg.data, np.uint8)
                         cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                     
-                    if cv_img is not None:
-                        _, buffer = cv2.imencode('.jpg', cv_img)
-                        return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+                    return cv_img
                 except Exception as e:
                     print(f"Error decoding image: {e}")
             
             # If we went too far past (e.g. 0.5s), stop
             if t > target_ns + 5e8:
-                print(f"Timeout searching for frame. Current: {t}, Target: {target_ns}")
                 break
                 
-    return "Frame not found", 404
+    return None
+
+@app.route('/api/preview_processing', methods=['POST'])
+def preview_processing():
+    data = request.json
+    bag_name = data.get('bag_name')
+    timestamp = data.get('timestamp')
+    options = data.get('options', {})
+    
+    if not bag_name or timestamp is None:
+        return jsonify({"error": "Bag name and timestamp required"}), 400
+        
+    bag_path = os.path.join(BAG_DIR, bag_name)
+    cv_img = get_cv_image_from_bag(bag_path, timestamp)
+    
+    if cv_img is None:
+        return jsonify({"error": "Frame not found"}), 404
+        
+    try:
+        processed_img = processor.process(cv_img, options)
+        _, buffer = cv2.imencode('.jpg', processed_img)
+        return send_file(io.BytesIO(buffer), mimetype='image/jpeg')
+    except Exception as e:
+        print(f"Error processing preview: {e}")
+        return jsonify({"error": str(e)}), 500
 
 import struct
 
