@@ -139,6 +139,8 @@ createApp({
         const description = ref("");
         const cuts = ref([]); // Array of {start, end}
         const activeCutStart = ref(null);
+        const tags = ref([]);
+        const allTags = ref([]);
 
         // Navigation State
         const currentStep = ref(1);
@@ -242,6 +244,7 @@ createApp({
             try {
                 await FrameDB.init();
                 await updateCacheSize();
+                await fetchTags();
                 const res = await fetch('/api/bags');
                 bags.value = await res.json();
             } catch (e) {
@@ -250,6 +253,50 @@ createApp({
                 loadingBags.value = false;
             }
         });
+
+        const fetchTags = async () => {
+            try {
+                const res = await fetch('/api/tags');
+                allTags.value = await res.json();
+            } catch (e) {
+                console.error("Failed to load tags", e);
+            }
+        };
+
+        const addTag = async (tagName) => {
+            if (!tagName || !currentBag.value) return;
+
+            // Add to current bag if not exists
+            if (!tags.value.includes(tagName)) {
+                tags.value.push(tagName);
+                saveMetadata();
+            }
+
+            // Add to global tags if not exists
+            if (!allTags.value.includes(tagName)) {
+                try {
+                    const res = await fetch('/api/tags', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tags: [tagName] })
+                    });
+                    if (res.ok) {
+                        allTags.value = await res.json();
+                    }
+                } catch (e) {
+                    console.error("Failed to add tag globally", e);
+                }
+            }
+        };
+
+        const removeTag = (tagName) => {
+            if (!currentBag.value) return;
+            const idx = tags.value.indexOf(tagName);
+            if (idx !== -1) {
+                tags.value.splice(idx, 1);
+                saveMetadata();
+            }
+        };
 
         const frameCache = ref(new Map()); // Key: timestamp.toFixed(3), Value: blobUrl
         const frameTimestamps = ref([]); // Sorted array of timestamps
@@ -710,6 +757,7 @@ createApp({
             activeCutStart.value = null;
             telemetry.value = [];
             selectedCutIndex.value = -1;
+            tags.value = bag.tags || [];
             history.value = [];
             historyIndex.value = -1;
 
@@ -729,6 +777,7 @@ createApp({
                 if (data.user_meta) {
                     description.value = data.user_meta.description || "";
                     cuts.value = data.user_meta.cuts || [];
+                    tags.value = data.user_meta.tags || [];
                 } else {
                     // If no user meta, maybe we have default cuts from backend?
                     // The backend sends `cuts` in bag list, but maybe not in info?
@@ -937,6 +986,7 @@ createApp({
                 bag_name: currentBag.value,
                 description: description.value,
                 cuts: cuts.value,
+                tags: tags.value,
                 duration: duration.value, // Save duration too for list view
                 start_time: startTime.value // Save start_time for list view
             };
@@ -956,6 +1006,7 @@ createApp({
                 if (bagIndex !== -1) {
                     bags.value[bagIndex].description = description.value;
                     bags.value[bagIndex].cuts = cuts.value;
+                    bags.value[bagIndex].tags = tags.value;
                     bags.value[bagIndex].duration = duration.value;
                     bags.value[bagIndex].start_time = startTime.value;
                 }
@@ -1543,7 +1594,12 @@ createApp({
             persistCache,
             cacheSizeMB,
             clearCache,
+            clearCache,
             formattedCurrentTime,
+            tags,
+            allTags,
+            addTag,
+            removeTag,
             // New Features
             deleteBag,
             getSparklinePoints,

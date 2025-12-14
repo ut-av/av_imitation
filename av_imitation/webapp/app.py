@@ -506,6 +506,55 @@ def save_metadata(bag_name):
         
     return jsonify({"status": "success"})
 
+TAGS_FILE = os.path.join(PROCESSED_DIR, "tags.json")
+
+@app.route('/api/tags', methods=['GET'])
+def get_tags():
+    if not os.path.exists(TAGS_FILE):
+        return jsonify([])
+    try:
+        with open(TAGS_FILE, 'r') as f:
+            tags = json.load(f)
+        return jsonify(tags)
+    except Exception as e:
+        print(f"Error reading tags: {e}")
+        return jsonify([])
+
+@app.route('/api/tags', methods=['POST'])
+def add_tags():
+    data = request.json
+    new_tags = data.get('tags', [])
+    if isinstance(new_tags, str):
+        new_tags = [new_tags]
+        
+    if not os.path.exists(PROCESSED_DIR):
+        os.makedirs(PROCESSED_DIR)
+        
+    current_tags = []
+    if os.path.exists(TAGS_FILE):
+        try:
+            with open(TAGS_FILE, 'r') as f:
+                current_tags = json.load(f)
+        except:
+            pass
+            
+    # Add unique
+    updated = False
+    for tag in new_tags:
+        if tag not in current_tags:
+            current_tags.append(tag)
+            updated = True
+            
+    if updated:
+        current_tags.sort()
+        try:
+            with open(TAGS_FILE, 'w') as f:
+                json.dump(current_tags, f, indent=2)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+            
+    return jsonify(current_tags)
+
 # Global state for processing jobs
 # Key: bag_name, Value: { "status": "running"|"done"|"error"|"cancelled", "progress": 0, "total": 0, "current": 0, "cancel_flag": False }
 processing_jobs = {}

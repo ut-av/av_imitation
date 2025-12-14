@@ -665,6 +665,46 @@
             padding: 2rem;
             color: var(--text-color);
         }
+
+        /* Tags */
+        .tag-pill {
+            display: inline-flex;
+            align-items: center;
+            background-color: #333;
+            color: #ddd;
+            border-radius: 12px;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            margin-right: 4px;
+            border: 1px solid #444;
+        }
+
+        .tag-pill .remove-tag {
+            margin-left: 4px;
+            cursor: pointer;
+            color: #aaa;
+            font-weight: bold;
+        }
+
+        .tag-pill .remove-tag:hover {
+            color: var(--error-color);
+        }
+
+        .tag-input-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .tag-input-container input {
+            background-color: #2c2c2c;
+            border: 1px solid #444;
+            color: #ccc;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 
@@ -730,13 +770,19 @@
                                             fill="#cf6679" />
                                     </svg>
 
-                                    <!-- Fallback line if no cuts but duration exists -->
                                     <svg width="100%" height="15" preserveAspectRatio="none" v-else-if="bag.duration">
                                         <line x1="0" y1="7.5" x2="100%" y2="7.5" stroke="#444" stroke-width="2"
                                             stroke-dasharray="4" />
                                     </svg>
                                 </div>
+                                <div style="margin-top: 4px; display: flex; flex-wrap: wrap; gap: 2px;">
+                                    <span v-for="tag in bag.tags" class="tag-pill"
+                                        style="font-size: 0.65rem; padding: 1px 6px;">
+                                        [[ tag ]]
+                                    </span>
+                                </div>
                             </div>
+
 
                             <!-- Actions -->
                             <button class="delete-btn" @click.stop="deleteBag(bag)" title="Delete Bag">
@@ -915,12 +961,38 @@
                                 </button>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="metadata-form">
-                        <h3>Metadata</h3>
-                        <textarea v-model="description" placeholder="Enter description for this bag file..."></textarea>
-                        <br><br>
+                        <!-- Metadata Form -->
+                        <div class="metadata-form">
+                            <h3>Metadata</h3>
+                            <div style="margin-bottom: 1rem;">
+                                <label
+                                    style="display: block; margin-bottom: 0.5rem; color: var(--text-muted);">Description</label>
+                                <textarea v-model="description" placeholder="Add notes about this bag..."></textarea>
+                            </div>
+
+                            <div style="margin-bottom: 1rem;">
+                                <label
+                                    style="display: block; margin-bottom: 0.5rem; color: var(--text-muted);">Tags</label>
+                                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+                                    <span v-for="tag in tags" class="tag-pill">
+                                        [[ tag ]]
+                                        <span class="remove-tag" @click="removeTag(tag)">×</span>
+                                    </span>
+                                </div>
+                                <div class="tag-input-container">
+                                    <input type="text" list="all-tags" placeholder="Add tag..."
+                                        @keydown.enter="addTag($event.target.value); $event.target.value = ''">
+                                    <datalist id="all-tags">
+                                        <option v-for="tag in allTags" :value="tag"></option>
+                                    </datalist>
+                                    <button class="secondary" style="padding: 4px 8px; font-size: 0.8rem;"
+                                        @click="const input = $event.target.previousElementSibling.previousElementSibling; addTag(input.value); input.value = ''">
+                                        Add
+                                    </button>
+                                </div>
+                            </div>
+                        </div><br>
                         <button @click="saveMetadata(true)">Save Metadata</button>
                     </div>
 
