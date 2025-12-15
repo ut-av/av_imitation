@@ -142,12 +142,21 @@ def train(args):
             print(f"Saved best model to {model_path}")
             
             # Save training metadata
+            # Save training metadata
+            
+            # Load dataset metadata to get color space
+            with open(metadata_file, 'r') as f:
+                ds_meta = json.load(f)
+            color_space = ds_meta.get('parameters', {}).get('channels', 'rgb')
+            
             training_meta = {
                 'model_type': args.model,
                 'dataset': args.dataset,
-                'input_channels': input_channels,
-                'input_height': input_shape[2],
-                'input_width': input_shape[3],
+                'input_channels': input_channels, # This is usually per-frame * n_frames or just total channels
+                'input_height': input_shape[3], # (B, T, C, H, W) -> H is index 3
+                'input_width': input_shape[4],  # (B, T, C, H, W) -> W is index 4
+                'n_frames': T,
+                'color_space': color_space,
                 'output_steps': output_steps,
                 'dropout': args.dropout,
                 'best_val_loss': best_val_loss,

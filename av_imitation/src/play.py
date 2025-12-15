@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from amrl_msgs.msg import AckermannCurvatureDriveMsg
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+import onnxruntime as ort
+import argparse
+import os
+
+import json
+from collections import deque
+
+class ModelPlayer(Node):
+    def __init__(self, model_path, camera_topic):
+        super().__init__('model_player')
+        
+        self.declare_parameter('model_path', model_path)
+        self.declare_parameter('camera_topic', camera_topic)
+        
+        self.model_path = self.get_parameter('model_path').get_parameter_value().string_value
+        self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
+        
+        # Load metadata
+        metadata_path = self.model_path.replace('.onnx', '_metadata.json')
+        if not os.path.exists(metadata_path):
+            self.get_logger().error(f"Metadata file not found: {metadata_path}")
+            # Fallback defaults
+            self.input_height = 240
+            self.input_width = 320
+            self.n_frames = 1
+        else:
+            with open(metadata_path, 'r') as f:
+                self.meta = json.load(f)
+            self.get_logger().info(f"Loaded metadata: {self.meta}")
+            self.input_height = self.meta.get('input_height', 240)
+            self.input_width = self.meta.get('input_width', 320)
+            self.n_frames = self.meta.get('n_frames', 1)
+            self.color_space = self.meta.get('color_space', 'rgb')
+
+        self.get_logger().info(f"Model expects: {self.n_frames} frames of {self.input_width}x{self.input_height} in {self.color_space}")
+
+        self.get_logger().info(f"Loading model from {self.model_path}")
+        self.ort_session = ort.InferenceSession(self.model_path)
+        
+        # Frame history buffer
+        self.history = deque(maxlen=self.n_frames)
+
+        self.bridge = CvBridge()
+        
+        self.subscription = self.create_subscription(
+            Image,
+            self.camera_topic,
+            self.image_callback,
+            10)
+            
+        self.publisher = self.create_publisher(AckermannCurvatureDriveMsg, '/ackermann_curvature_drive', 10)
+        
+        self.get_logger().info(f"Subscribed to {self.camera_topic}")
+        self.get_logger().info("Publishing to /ackermann_curvature_drive")
+
+    def image_callback(self, msg):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except Exception as e:
+            self.get_logger().error(f"Failed to convert image: {e}")
+            return
+
+        # Preprocess using metadata dimensions
+        input_img = cv2.resize(cv_image, (self.input_width, self.input_height))
+        
+        # Color space conversion
+        if self.color_space == 'gray':
+            input_img = cv2.cvtColor(input_img, cv2.COLOR_BGR2GRAY)
+            # Add channel dimension if needed (usually gray is HxW, but model might expect C=1)
+            # If we transpose later (2, 0, 1), we need 3 dims.
+            if input_img.ndim == 2:
+                input_img = input_img[:, :, np.newaxis]
+        elif self.color_space == 'hsv':
+            input_img = cv2.cvtColor(input_img, cv2.COLOR_BGR2HSV)
+        else: # rgb
+            input_img = cv2.cvtColor(input_img, cv2.COLOR_BGR2RGB)
+        
+        # Normalize 0-1
+        input_img = input_img.astype(np.float32) / 255.0
+        
+        # Transpose to (C, H, W)
+        input_img = input_img.transpose(2, 0, 1) # (C, H, W)
+        
+        # Update history
+        self.history.append(input_img)
+        
+        # Wait until we have enough frames
+        if len(self.history) < self.n_frames:
+            # Pad with the first frame or just wait? 
+            # Let's repeat the current frame until full to start immediately
+            while len(self.history) < self.n_frames:
+                self.history.appendleft(input_img)
+        
+        # Stack frames in channel dimension: (T*C, H, W)
+        # deque to list -> stack -> (n_frames, 3, H, W) -> reshape/concatenation
+        # We want to concatenate along channel dimension
+        # history[0] is (3, H, W), history[1] is (3, H, W)
+        # concatenate -> (3*n_frames, H, W)
+        stacked_img = np.concatenate(list(self.history), axis=0)
+        
+        # Add batch dimension (1, C_total, H, W)
+        input_tensor = stacked_img[np.newaxis, ...]
+        
+        # Inference
+        try:
+            ort_inputs = {self.ort_session.get_inputs()[0].name: input_tensor}
+            ort_outs = self.ort_session.run(None, ort_inputs)
+            output = ort_outs[0] # (1, T_out, 2)
+            
+            # Extract action
+            # Assuming output is (batch, time, features) and features are [velocity, curvature]
+            # We take the first time step
+            action = output[0, 0, :]
+            velocity = float(action[0])
+            curvature = float(action[1])
+            
+            # Publish command
+            cmd_msg = AckermannCurvatureDriveMsg()
+            cmd_msg.header.stamp = self.get_clock().now().to_msg()
+            cmd_msg.header.frame_id = "base_link"
+            cmd_msg.velocity = velocity
+            cmd_msg.curvature = curvature
+            
+            self.publisher.publish(cmd_msg)
+        except Exception as e:
+            self.get_logger().error(f"Inference failed: {e}")
+
+def main(args=None):
+    rclpy.init(args=args)
+    
+    parser = argparse.ArgumentParser(description='Run ONNX model on car')
+    parser.add_argument('--model', type=str, required=True, help='Path to ONNX model')
+    parser.add_argument('--topic', type=str, default='/camera_0/image_raw', help='Camera topic')
+    
+    # Filter ROS args
+    ros_args = rclpy.utilities.remove_ros_args(args)
+    parsed_args = parser.parse_args(ros_args[1:]) # Skip script name
+
+    node = ModelPlayer(parsed_args.model, parsed_args.topic)
+    
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    import sys
+    main(sys.argv)

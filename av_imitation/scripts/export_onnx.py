@@ -259,6 +259,8 @@ def export_to_onnx(
         'output_steps': output_steps,
         'input_height': input_height,
         'input_width': input_width,
+        'n_frames': metadata.get('n_frames', 1), # Default to 1 if not present
+        'color_space': metadata.get('color_space', 'rgb'),
         'opset_version': opset_version,
         'source_weights': os.path.basename(weights_path),
     }
