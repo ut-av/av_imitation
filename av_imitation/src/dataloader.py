@@ -17,6 +17,8 @@ class AVDataset(Dataset):
         
         with open(metadata_file, 'r') as f:
             self.meta = json.load(f)
+        
+        print(f"Loaded metadata file {metadata_file} for dataset {self.meta['dataset_name']} with parameters {self.meta['parameters']}.")
             
         self.root_dir = self.meta['root_dir']
         self.samples = self._filter_split(self.meta['samples'], split)
@@ -86,15 +88,14 @@ class AVDataset(Dataset):
             full_path = os.path.join(self.root_dir, img_path)
             img = cv2.imread(full_path)
             if img is None:
-                # Handle missing image?
-                img = np.zeros((240, 320, 3), dtype=np.uint8) # Placeholder
+                raise RuntimeError(f"Failed to load image: {full_path}")
             history_imgs.append(img)
             
         # Current image
         curr_path = os.path.join(self.root_dir, sample_info['current_image'])
         curr_img = cv2.imread(curr_path)
         if curr_img is None:
-             curr_img = np.zeros((240, 320, 3), dtype=np.uint8)
+            raise RuntimeError(f"Failed to load image: {curr_path}")
              
         # Stack images? Or return list?
         # Usually stack channel-wise or sequence dimension.
@@ -105,15 +106,31 @@ class AVDataset(Dataset):
         all_imgs = history_imgs + [curr_img]
         # Convert to tensor
         tensors = []
+        
+        # Get channel configuration from metadata parameters
+        # Default to rgb if not specified
+        channels_conf = self.meta.get('parameters', {}).get('channels', 'rgb')
+        
         for img in all_imgs:
-            # Handle grayscale (H, W) -> (H, W, 1) if needed, or check dimensions
-            if img.ndim == 2:
-                # Grayscale
-                img = img[:, :, np.newaxis]
-            else:
-                # BGR to RGB
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
+            # Handle channels
+            if channels_conf == 'gray':
+                 # Ensure 1 channel
+                 if img.ndim == 3:
+                     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                 if img.ndim == 2:
+                     img = img[:, :, np.newaxis]
+            elif channels_conf == 'hsv':
+                 # Convert BGR to HSV
+                 if img.ndim == 3:
+                     img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            else: # rgb
+                 # BGR to RGB
+                 if img.ndim == 3:
+                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                 elif img.ndim == 2:
+                     # If gray but expected RGB, convert back?
+                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+
             # HWC -> CHW
             img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             tensors.append(img_tensor)

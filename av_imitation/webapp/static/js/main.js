@@ -1,4 +1,4 @@
-const { createApp, ref, computed, onMounted, watch } = Vue;
+const { createApp, ref, computed, onMounted, watch, onBeforeUpdate, nextTick } = Vue;
 
 // IndexedDB Helper
 const FrameDB = {
@@ -142,6 +142,15 @@ createApp({
         const tags = ref([]);
         const allTags = ref([]);
 
+        // Robust Image Loading
+        const sampleImageRefs = ref([]);
+        const collectImageRef = (el) => {
+            if (el) sampleImageRefs.value.push(el);
+        };
+        onBeforeUpdate(() => {
+            sampleImageRefs.value = [];
+        });
+
         // Navigation State
         const currentStep = ref(1);
 
@@ -192,6 +201,12 @@ createApp({
             futureRate: 5.0,
             futureDuration: 3.0
         });
+        const filterResolution = ref("");
+        const filterChannels = ref("");
+        const filterCanny = ref(false);
+        const filterDepth = ref(false);
+        const filterTags = ref("");
+
         const isGenerating = ref(false);
         const generationStatus = ref("");
 
@@ -1344,7 +1359,8 @@ createApp({
                     ...pBag,
                     duration: originalBag?.duration || 0,
                     start_time: originalBag?.start_time || 0,
-                    image_count: originalBag ? originalBag.image_count : 0
+                    image_count: originalBag ? originalBag.image_count : 0,
+                    tags: originalBag?.tags || []
                 };
             }).sort((a, b) => {
                 // Sort by start_time descending (newest first)
@@ -1427,6 +1443,74 @@ createApp({
             }
         };
 
+        const availableResolutions = computed(() => {
+            const resolutions = new Set();
+            processedBags.value.forEach(pBag => {
+                if (pBag.options.resize) {
+                    resolutions.add(`${pBag.options.resolution[0]}x${pBag.options.resolution[1]}`);
+                } else {
+                    resolutions.add("Original");
+                }
+            });
+            return Array.from(resolutions).sort();
+        });
+
+        const filteredProcessedBags = computed(() => {
+            return enrichedProcessedBags.value.filter(pBag => {
+                // Resolution
+                if (filterResolution.value) {
+                    let res = "Original";
+                    if (pBag.options.resize) {
+                        res = `${pBag.options.resolution[0]}x${pBag.options.resolution[1]}`;
+                    }
+                    if (res !== filterResolution.value) return false;
+                }
+
+                // Channels
+                if (filterChannels.value && pBag.options.channels !== filterChannels.value) return false;
+
+                // Canny - strict match for consistency or loose? 
+                // Let's do strict match: if filter checked, must have it. If not checked, don't care?
+                // Actually requirement says "only bags with the same properties are shown".
+                // So if I check Canny, I want Canny bags. If I uncheck, do I want "Not Canny" or "Any"?
+                // "filter above the list ... so that only bags with the same properties are shown" implies narrowing.
+                // If I select "Canny", show only Canny bags.
+                if (filterCanny.value && !pBag.options.canny) return false;
+
+                // Depth
+                if (filterDepth.value && !pBag.options.depth) return false;
+
+                // Tags
+                if (filterTags.value && !pBag.tags.includes(filterTags.value)) return false;
+
+                return true;
+            });
+        });
+
+        const clearFilters = () => {
+            filterResolution.value = "";
+            filterChannels.value = "";
+            filterCanny.value = false;
+            filterDepth.value = false;
+            filterTags.value = "";
+        };
+
+        const selectAllVisible = () => {
+            filteredProcessedBags.value.forEach(pBag => {
+                // Avoid duplicates using bag_name + options checking or just checking if object is in array
+                // Since pBag objects might be transiently created in enrichedProcessedBags, we should check by unique ID or path.
+                // pBag.path is unique.
+                if (!selectedProcessedBags.value.some(b => b.path === pBag.path)) {
+                    selectedProcessedBags.value.push(pBag);
+                }
+            });
+        };
+
+        const deselectAllVisible = () => {
+            const visiblePaths = new Set(filteredProcessedBags.value.map(b => b.path));
+            selectedProcessedBags.value = selectedProcessedBags.value.filter(b => !visiblePaths.has(b.path));
+        };
+
         const generateDataset = async () => {
             if (selectedProcessedBags.value.length === 0) return;
 
@@ -1434,13 +1518,28 @@ createApp({
             generationStatus.value = "Starting generation...";
             generationProgress.value = 0;
 
+            // Extract options from the first selected bag to save as dataset parameters
+            // We assume user has filtered correctly so all selected bags have compatible options.
+            const representativeBag = selectedProcessedBags.value[0];
+            const isResized = !!representativeBag.options.resolution;
+
+            const datasetProcessingOptions = {
+                resize: isResized,
+                width: isResized ? representativeBag.options.resolution[0] : null,
+                height: isResized ? representativeBag.options.resolution[1] : null,
+                channels: representativeBag.options.channels,
+                canny: representativeBag.options.canny,
+                depth: representativeBag.options.depth
+            };
+
             const payload = {
                 selected_bags: selectedProcessedBags.value,
                 dataset_name: datasetName.value,
                 history_rate: datasetOptions.value.historyRate,
                 history_duration: datasetOptions.value.historyDuration,
                 future_rate: datasetOptions.value.futureRate,
-                future_duration: datasetOptions.value.futureDuration
+                future_duration: datasetOptions.value.futureDuration,
+                processing_options: datasetProcessingOptions
             };
 
             try {
@@ -1449,20 +1548,146 @@ createApp({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
 
-                if (data.error) {
+                if (res.ok) {
+                    const data = await res.json();
+                    const jobId = data.job_id;
+                    generationStatus.value = "Job started. ID: " + jobId;
+
+                    // Poll for status
+                    generationPollInterval.value = setInterval(() => pollGenerationStatus(jobId), 1000);
+                } else {
+                    const data = await res.json();
                     generationStatus.value = "Error: " + data.error;
                     isGenerating.value = false;
-                } else {
-                    generationStatus.value = "Generation started...";
-                    if (generationPollInterval.value) clearInterval(generationPollInterval.value);
-                    generationPollInterval.value = setInterval(() => pollGenerationStatus(data.job_id), 1000);
                 }
             } catch (e) {
-                console.error("Generation error", e);
-                generationStatus.value = "Error starting generation.";
+                console.error("Failed to generate dataset", e);
+                generationStatus.value = "Error: " + e.message;
                 isGenerating.value = false;
+            }
+        };
+
+        const currentLoadedDataset = ref(null);
+
+        const resetDatasetForm = () => {
+            currentLoadedDataset.value = null;
+            datasetName.value = "dataset";
+            datasetOptions.value = {
+                historyRate: 5,
+                historyDuration: 5.0,
+                futureRate: 5,
+                futureDuration: 3.0
+            };
+            selectedProcessedBags.value = [];
+            clearFilters();
+        };
+
+        const loadDatasetConfig = (ds) => {
+            console.log("Loading dataset config:", ds);
+            currentLoadedDataset.value = ds.dataset_name;
+            datasetName.value = ds.dataset_name;
+
+            if (ds.parameters) {
+                datasetOptions.value = {
+                    historyRate: ds.parameters.history_rate || 5,
+                    historyDuration: ds.parameters.history_duration || 5.0,
+                    futureRate: ds.parameters.future_rate || 5,
+                    futureDuration: ds.parameters.future_duration || 3.0
+                };
+            }
+
+            // Select corresponding processed bags
+            selectedProcessedBags.value = [];
+            if (ds.source_bags && processedBags.value) {
+                const sourceBagNames = new Set(ds.source_bags);
+
+                // We need to match not just bag name but also processing options if possible
+                // The dataset parameters contain 'options' which are the processing options
+                // Also legacy datasets might have parameters directly on parameters object
+                const params = ds.parameters || {};
+                const dsOptions = params.options || {};
+
+                // Fallback to top-level parameters if not in options
+                const dsChannels = dsOptions.channels || params.channels;
+                const dsCanny = dsOptions.canny !== undefined ? dsOptions.canny : params.canny;
+                const dsDepth = dsOptions.depth !== undefined ? dsOptions.depth : params.depth;
+
+                // Resolution check logic
+                // Check resize/resolution
+                // Logic: 
+                // 1. If options.resize is explicitly defined, use it.
+                // 2. If options.width/height defined, imply resize.
+                // 3. Fallback to top level params width/height.
+
+                let dsResize = dsOptions.resize;
+                let dsWidth = dsOptions.width || params.width;
+                let dsHeight = dsOptions.height || params.height;
+
+                console.log("Dataset Options (Merged):", {
+                    channels: dsChannels,
+                    canny: dsCanny,
+                    depth: dsDepth,
+                    resize: dsResize,
+                    width: dsWidth,
+                    height: dsHeight
+                });
+
+                // Use enrichedProcessedBags to ensure object reference equality for v-model
+                const bagsPool = enrichedProcessedBags.value || processedBags.value;
+
+                bagsPool.forEach(pBag => {
+                    if (sourceBagNames.has(pBag.bag_name)) {
+                        const currOpts = pBag.options;
+                        const currIsResized = !!currOpts.resolution;
+
+                        let resolutionMatch = false;
+
+                        if (dsResize) {
+                            resolutionMatch = currIsResized &&
+                                dsWidth === currOpts.resolution[0] &&
+                                dsHeight === currOpts.resolution[1];
+                        } else if (dsWidth && dsHeight) {
+                            // Fallback: if width/height are set, imply resize check
+                            resolutionMatch = currIsResized &&
+                                dsWidth === currOpts.resolution[0] &&
+                                dsHeight === currOpts.resolution[1];
+                        } else if (currIsResized) {
+                            // Dataset says nothing about resize (or resize=false/null), but bag IS resized.
+                            // Fail match to avoid selecting wrong processing version.
+                            resolutionMatch = false;
+                        } else {
+                            // Neither has resize info -> Match.
+                            resolutionMatch = true;
+                        }
+
+                        // Simple check: channels, canny, depth
+                        // Normalize channels: undefined/null treated as 'rgb' if we assume default, but safer to check strict first.
+                        // If dsChannels is undefined, maybe we shouldn't fail? Assuming legacy "rgb"?
+                        // Let's assume strict if defined, loose if undefined?
+                        // If undefined, it matches anything? Or matches default 'rgb'?
+                        // Looking at logs, bag is 'gray', ds is undefined. Match failed.
+                        // If the dataset was created without channels info, it likely used whatever was default or available.
+                        // But if we want to be strict, we might fail.
+                        // However, if the goal is "it's not working", we probably want to be permissive if data is missing.
+
+                        const channelsMatch = !dsChannels || (dsChannels === currOpts.channels);
+                        // For booleans, undefined usually means false/off in this context?
+                        const cannyMatch = (!!dsCanny === !!currOpts.canny);
+                        const depthMatch = (!!dsDepth === !!currOpts.depth);
+
+                        const match = resolutionMatch && channelsMatch && cannyMatch && depthMatch;
+
+                        if (match) {
+                            selectedProcessedBags.value.push(pBag);
+                        } else {
+                            if (!channelsMatch) {
+                                console.log(`Channels mismatch for ${pBag.bag_name}: DS='${dsChannels}' (${typeof dsChannels}) vs Bag='${currOpts.channels}' (${typeof currOpts.channels})`);
+                            }
+                            console.log(`Bag ${pBag.bag_name} matching failed. Res: ${resolutionMatch}, Ch: ${channelsMatch}, Can: ${cannyMatch}, Dep: ${depthMatch}`);
+                        }
+                    }
+                });
             }
         };
 
@@ -1575,30 +1800,23 @@ createApp({
         };
 
         const loadingSample = ref(false);
-        const loadedImagesCount = ref(0);
 
-        const totalImagesToLoad = computed(() => {
-            if (!currentSample.value) return 0;
-            return (currentSample.value.history_images ? currentSample.value.history_images.length : 0) +
-                1 + // current image
-                (currentSample.value.future_images ? currentSample.value.future_images.length : 0);
-        });
-
-        const onImageLoad = () => {
-            loadedImagesCount.value++;
-            if (loadedImagesCount.value >= totalImagesToLoad.value) {
-                loadingSample.value = false;
+        const checkLoadingStatus = () => {
+            if (!loadingSample.value) return;
+            // If we have refs, check if they are all complete
+            if (sampleImageRefs.value.length > 0) {
+                const allLoaded = sampleImageRefs.value.every(img => img.complete);
+                if (allLoaded) {
+                    loadingSample.value = false;
+                }
             }
         };
 
-        watch(currentSample, () => {
+        watch(currentSample, async () => {
             if (currentSample.value) {
                 loadingSample.value = true;
-                loadedImagesCount.value = 0;
-                // Safety check: if no images, stop loading immediately
-                if (totalImagesToLoad.value === 0) {
-                    loadingSample.value = false;
-                }
+                await nextTick();
+                checkLoadingStatus(); // Check immediately for cached images
             }
         });
 
@@ -1794,15 +2012,41 @@ createApp({
             prevSample,
             datasetStats,
             enrichedProcessedBags,
-            duplicateDataset,
+            filteredProcessedBags,
+            filterResolution,
+            filterChannels,
+            filterCanny,
+            filterDepth,
+            filterTags,
+            availableResolutions,
+            clearFilters,
+            selectAllVisible,
+            deselectAllVisible,
             duplicateDataset,
             generationProgress,
+            loadingDataset,
+            datasetStats,
+            enrichedProcessedBags,
+            filteredProcessedBags,
+            filterResolution,
+            filterChannels,
+            filterCanny,
+            filterDepth,
+            filterTags,
+            availableResolutions,
+            clearFilters,
+            selectAllVisible,
+            deselectAllVisible,
             duplicateDataset,
             generationProgress,
             loadingDataset,
             loadingSample,
-            onImageLoad,
-            deleteDataset
+            checkLoadingStatus,
+            collectImageRef,
+            deleteDataset,
+            currentLoadedDataset,
+            resetDatasetForm,
+            loadDatasetConfig
         };
     }
 }).mount('#app');

@@ -790,7 +790,7 @@ def list_processed_bags():
 
 generation_jobs = {}
 
-def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration):
+def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration, processing_options):
     try:
         samples = []
         total_bags = len(selected_bags)
@@ -853,8 +853,12 @@ def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, h
                     closest_t = image_times[idx]
                     
                     if abs(closest_t - target_t) > 0.1:
-                        valid_sample = False
-                        break
+                        # If target is before start of bag, use first image (oldest available)
+                        if target_t < image_times[0]:
+                           closest_t = image_times[0]
+                        else:
+                            valid_sample = False
+                            break
                         
                     history_images.append(os.path.join(bag_path, "images", f"{closest_t:.6f}.jpg"))
                     
@@ -913,7 +917,11 @@ def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, h
                 "history_rate": history_rate,
                 "history_duration": history_duration,
                 "future_rate": future_rate,
-                "future_duration": future_duration
+                "future_duration": future_duration,
+                "width": processing_options.get('width'),
+                "height": processing_options.get('height'),
+                "channels": processing_options.get('channels'),
+                "options": processing_options
             },
             "samples": samples
         }
@@ -942,6 +950,8 @@ def generate_dataset():
     future_rate = float(data.get('future_rate', 1.0))
     future_duration = float(data.get('future_duration', 1.0))
     
+    processing_options = data.get('processing_options', {})
+
     if not selected_bags:
         return jsonify({"error": "No bags selected"}), 400
         
@@ -954,7 +964,7 @@ def generate_dataset():
     }
     
     thread = threading.Thread(target=generate_dataset_thread, args=(
-        job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration
+        job_id, selected_bags, dataset_name, history_rate, history_duration, future_rate, future_duration, processing_options
     ))
     thread.start()
     

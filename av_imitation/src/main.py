@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 from dataloader import get_dataloader
 from models import CNN, MLP, Transformer
 
@@ -54,6 +55,7 @@ def train(args):
         raise ValueError(f"Expected 5D input (B, T, C, H, W), got {input_shape}")
     
     output_steps = action_shape[1]
+    input_channels = C
     
     print(f"Num Frames (T): {T}")
     print(f"Channels per Frame (C): {C}")
@@ -89,7 +91,8 @@ def train(args):
         model.train()
         train_loss = 0.0
         
-        for i, batch in enumerate(train_loader):
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{args.epochs}')
+        for i, batch in enumerate(pbar):
             images = batch['image'].to(device)
             actions = batch['action'].to(device)
             
@@ -100,6 +103,9 @@ def train(args):
             optimizer.step()
             
             train_loss += loss.item()
+            
+            # Update progress bar with current loss
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
             
         avg_train_loss = train_loss / len(train_loader)
         
