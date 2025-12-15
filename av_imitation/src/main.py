@@ -36,16 +36,87 @@ def train(args):
     print(f"Using device: {device}")
     
     # Load Dataset to get dimensions
-    print("Loading dataset...")
-    train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True)
-    val_loader = get_dataloader(metadata_file, split='val', batch_size=args.batch_size, shuffle=False)
+    print("Loading dataset metadata...")
     
-    # Inspect one sample to determine input/output shapes
-    sample_batch = next(iter(train_loader))
-    input_shape = sample_batch['image'].shape # (B, T, C, H, W)
-    print(f"Input Shape: {input_shape}")
-    action_shape = sample_batch['action'].shape # (B, T, 2)
-    print(f"Action Shape: {action_shape}")
+    # 1. Estimate Data Loader Memory Usage
+    # Create a temporary loader to fetch one sample
+    temp_loader = get_dataloader(metadata_file, split='train', batch_size=1, shuffle=False, 
+                                num_workers=0, pin_memory=False, prefetch_factor=None, persistent_workers=False)
+    
+    print("Estimating memory usage...")
+    sample_batch = next(iter(temp_loader))
+    
+    # Calculate memory per sample (in bytes)
+    # image: (B, T, C, H, W) -> float32 (4 bytes) typically
+    # action: (B, T, 2)
+    img_mem = sample_batch['image'].element_size() * sample_batch['image'].nelement()
+    act_mem = sample_batch['action'].element_size() * sample_batch['action'].nelement()
+    # Add overhead safety factor (Python objects, internal buffers) - conservatively 1.5x
+    sample_mem_est = (img_mem + act_mem) * 1.5
+    
+    batch_mem_est = sample_mem_est * args.batch_size
+    print(f"Estimated memory per sample: {sample_mem_est / 1024**2:.2f} MB")
+    print(f"Estimated memory per batch (batch_size={args.batch_size}): {batch_mem_est / 1024**2:.2f} MB")
+    
+    # Target Memory Limit for Data Loading Buffers (e.g. 90GB)
+    MEMORY_LIMIT_GB = 90
+    MEMORY_LIMIT_BYTES = MEMORY_LIMIT_GB * 1024**3
+    
+    # Total Buffer Memory ~= (num_workers * prefetch_factor * batch_size_memory)
+    # We want Total Buffer Memory < MEMORY_LIMIT_BYTES
+    
+    # Solve for max_workers
+    # max_workers = MEMORY_LIMIT / (prefetch_factor * batch_mem)
+    prefetch_factor = args.prefetch_factor
+    
+    max_workers_mem = int(MEMORY_LIMIT_BYTES / (prefetch_factor * batch_mem_est))
+    # Ensure at least 1 worker if possible, but dont crash
+    max_workers_mem = max(0, max_workers_mem)
+    
+    print(f"Max workers allowed by memory limit ({MEMORY_LIMIT_GB} GB): {max_workers_mem}")
+    
+    # Select final num_workers
+    train_num_workers = min(args.num_workers, max_workers_mem)
+    # Drastically reduce val workers since validation is just inference
+    val_num_workers = min(2, train_num_workers)
+    
+    print(f"Using Train Workers: {train_num_workers}")
+    print(f"Using Val Workers: {val_num_workers}")
+
+    # Helper to clean args for get_dataloader
+    train_dl_kwargs = {
+        'num_workers': train_num_workers,
+        'pin_memory': args.pin_memory,
+        'prefetch_factor': args.prefetch_factor if train_num_workers > 0 else None, # prefetch_factor requires num_workers > 0
+        'persistent_workers': args.persistent_workers if train_num_workers > 0 else False
+    }
+    
+    val_dl_kwargs = {
+        'num_workers': val_num_workers,
+        'pin_memory': args.pin_memory,
+        'prefetch_factor': args.prefetch_factor if val_num_workers > 0 else None,
+        'persistent_workers': args.persistent_workers if val_num_workers > 0 else False
+    }
+    
+    if train_num_workers == 0:
+         print("Warning: num_workers set to 0. Data loading will be on the main process and might be slow.")
+    
+    train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs)
+    val_loader = get_dataloader(metadata_file, split='val', batch_size=args.batch_size, shuffle=False, **val_dl_kwargs)
+    
+    # Inspect one sample to determine input/output shapes (we already have one from temp_loader)
+    # Re-use sample_batch but we need to check if dimensions match what model expects (B, T, C, H, W)
+    # temp_loader had batch_size=1, so we should be careful.
+    # The shapes in sample_batch are (1, ...).
+    # Model expects (B, ...).
+    
+    input_shape = list(sample_batch['image'].shape)
+    input_shape[0] = args.batch_size # Pretend it is the full batch size for logging
+    input_shape = torch.Size(input_shape)
+    
+    print(f"Input Shape (simulated): {input_shape}")
+    action_shape = sample_batch['action'].shape 
+    print(f"Action Shape (from sample): {action_shape}")
     
     if len(input_shape) == 5:
         B, T, C, H, W = input_shape
@@ -186,6 +257,16 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
     parser.add_argument('--epochs', type=int, default=100, help='Maximum number of epochs')
     parser.add_argument('--early-stopping-epochs', type=int, default=10, help='Number of epochs to wait for improvement before early stopping')
+    
+    # Data Loading Optimizations
+    parser.add_argument('--num-workers', type=int, default=min(os.cpu_count() or 4, 16), help='Number of data loading workers')
+    parser.add_argument('--pin-memory', action='store_true', help='Pin memory for faster host-to-device transfer')
+    parser.add_argument('--no-pin-memory', dest='pin_memory', action='store_false')
+    parser.set_defaults(pin_memory=True)
+    parser.add_argument('--prefetch-factor', type=int, default=2, help='Number of batches loaded in advance by each worker')
+    parser.add_argument('--persistent-workers', action='store_true', help='Keep workers alive between epochs')
+    parser.add_argument('--no-persistent-workers', dest='persistent_workers', action='store_false')
+    parser.set_defaults(persistent_workers=True)
     
     args = parser.parse_args()
     train(args)

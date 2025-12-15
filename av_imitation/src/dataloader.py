@@ -16,12 +16,31 @@ class AVDataset(Dataset):
         self.split = split
         
         with open(metadata_file, 'r') as f:
-            self.meta = json.load(f)
+            meta = json.load(f)
         
-        print(f"Loaded metadata file {metadata_file} for dataset {self.meta['dataset_name']} with parameters {self.meta['parameters']}.")
+        # Store parameters directly
+        self.parameters = meta.get('parameters', {})
+        
+        print(f"Loaded metadata file {metadata_file} for dataset {meta['dataset_name']} with parameters {self.parameters}.")
             
-        self.root_dir = self.meta['root_dir']
-        self.samples = self._filter_split(self.meta['samples'], split)
+        # Handle path mismatch if dataset was generated on another machine
+        # We assume the data is located relative to the rosbags_processed directory
+        # which is the parent of the datasets directory where the metadata file is.
+        # So if metadata_file is /a/b/data/rosbags_processed/datasets/xyz.json
+        # then root_dir should probably be /a/b/data/rosbags_processed
+        
+        default_root = os.path.dirname(os.path.dirname(os.path.abspath(metadata_file)))
+        
+        # Get root_dir from local meta
+        meta_root_dir = meta['root_dir']
+        
+        # Check if the metadata root_dir exists
+        if os.path.exists(meta_root_dir):
+            self.root_dir = meta_root_dir
+        else:
+            print(f"Warning: Metadata root_dir {meta_root_dir} does not exist. Using inferred root {default_root}")
+            self.root_dir = default_root
+        self.samples = self._filter_split(meta['samples'], split)
         
         # Cache for images if needed? No, let's load on fly.
         
@@ -78,21 +97,51 @@ class AVDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    def _fix_path(self, path):
+        """Fix path if it's absolute from another machine."""
+        # If path is relative, join with root_dir
+        if not os.path.isabs(path):
+            return os.path.join(self.root_dir, path)
+            
+        # If path is absolute and exists, return it
+        if os.path.exists(path):
+            return path
+            
+        # If absolute and doesn't exist, try to relativize it
+        # Assume standard structure: .../rosbags_processed/...
+        if 'rosbags_processed' in path:
+            # Split and keep everything after the first occurrence of rosbags_processed
+            # actually root_dir typically points to rosbags_processed
+            # So we want the part INSIDE rosbags_processed
+            parts = path.split('rosbags_processed/')
+            if len(parts) > 1:
+                rel_path = parts[-1]
+                # If root_dir ends with rosbags_processed, join directly
+                if self.root_dir.endswith('rosbags_processed'):
+                    return os.path.join(self.root_dir, rel_path)
+                else:
+                    return os.path.join(self.root_dir, 'rosbags_processed', rel_path)
+        
+        # Fallback: just return assuming it might work or let it fail
+        return path
+
     def __getitem__(self, idx):
         sample_info = self.samples[idx]
         
         # Load images
         # History images
         history_imgs = []
+        history_imgs = []
         for img_path in sample_info['history_images']:
-            full_path = os.path.join(self.root_dir, img_path)
+            full_path = self._fix_path(img_path)
             img = cv2.imread(full_path)
             if img is None:
                 raise RuntimeError(f"Failed to load image: {full_path}")
             history_imgs.append(img)
             
+            
         # Current image
-        curr_path = os.path.join(self.root_dir, sample_info['current_image'])
+        curr_path = self._fix_path(sample_info['current_image'])
         curr_img = cv2.imread(curr_path)
         if curr_img is None:
             raise RuntimeError(f"Failed to load image: {curr_path}")
@@ -109,7 +158,7 @@ class AVDataset(Dataset):
         
         # Get channel configuration from metadata parameters
         # Default to rgb if not specified
-        channels_conf = self.meta.get('parameters', {}).get('channels', 'rgb')
+        channels_conf = self.parameters.get('channels', 'rgb')
         
         for img in all_imgs:
             # Handle channels
@@ -152,6 +201,9 @@ class AVDataset(Dataset):
             
         return sample
 
-def get_dataloader(metadata_file, split='train', batch_size=32, shuffle=True, num_workers=4):
+def get_dataloader(metadata_file, split='train', batch_size=32, shuffle=True, 
+                   num_workers=4, pin_memory=True, prefetch_factor=2, persistent_workers=True):
     dataset = AVDataset(metadata_file, split=split)
-    return TorchDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return TorchDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, 
+                           num_workers=num_workers, pin_memory=pin_memory, 
+                           prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)
