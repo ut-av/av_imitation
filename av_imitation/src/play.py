@@ -79,6 +79,14 @@ class ModelPlayer(Node):
         # Rate limiting state
         self.last_process_time = rclpy.time.Time(seconds=0, clock_type=self.get_clock().clock_type)
         
+        # For debugging frequency
+        self.last_inference_time = self.get_clock().now()
+        
+        # Optimization state
+        self.last_inference_input_timestamp = rclpy.time.Time(seconds=0, clock_type=self.get_clock().clock_type)
+        self.current_prediction = None
+        self.prediction_step = 0
+        
         # Create inference timer at prediction frequency
         self.create_timer(1.0/self.future_rate, self.inference_callback)
 
@@ -133,40 +141,72 @@ class ModelPlayer(Node):
         # Ensure we have enough history
         if len(self.history) < self.history_frames:
             return
+
+        # Calculate frequency
+        now = self.get_clock().now()
+        dt = (now - self.last_inference_time).nanoseconds / 1e9
+        if dt > 0:
+            freq = 1.0 / dt
+        else:
+            freq = 0.0
+        self.last_inference_time = now
             
-        # Stack frames in channel dimension: (T*C, H, W)
-        # deque to list -> stack -> (n_frames, 3, H, W) -> reshape/concatenation
-        # We want to concatenate along channel dimension
-        # history[0] is (3, H, W), history[1] is (3, H, W)
-        # concatenate -> (3*n_frames, H, W)
-        stacked_img = np.concatenate(list(self.history), axis=0)
+        # Check if inputs have changed
+        inputs_changed = (self.last_process_time != self.last_inference_input_timestamp)
         
-        # Add batch dimension (1, C_total, H, W)
-        input_tensor = stacked_img[np.newaxis, ...]
+        if inputs_changed or self.current_prediction is None:
+            # Stack frames in channel dimension: (T*C, H, W)
+            # deque to list -> stack -> (n_frames, 3, H, W) -> reshape/concatenation
+            # We want to concatenate along channel dimension
+            # history[0] is (3, H, W), history[1] is (3, H, W)
+            # concatenate -> (3*n_frames, H, W)
+            stacked_img = np.concatenate(list(self.history), axis=0)
+            
+            # Add batch dimension (1, C_total, H, W)
+            input_tensor = stacked_img[np.newaxis, ...]
+            
+            # Inference
+            try:
+                ort_inputs = {self.ort_session.get_inputs()[0].name: input_tensor}
+                ort_outs = self.ort_session.run(None, ort_inputs)
+                output = ort_outs[0] # (1, T_out, 2)
+                
+                self.current_prediction = output[0]
+                self.prediction_step = 0
+                self.last_inference_input_timestamp = self.last_process_time
+                
+            except Exception as e:
+                self.get_logger().error(f"Inference failed: {e}")
+                return
+        else:
+            self.prediction_step += 1
+            if self.prediction_step >= len(self.current_prediction):
+                self.get_logger().warn("Ran out of prediction steps")
+                return
         
-        # Inference
-        try:
-            ort_inputs = {self.ort_session.get_inputs()[0].name: input_tensor}
-            ort_outs = self.ort_session.run(None, ort_inputs)
-            output = ort_outs[0] # (1, T_out, 2)
+        # Extract action
+        action = self.current_prediction[self.prediction_step]
+        # Training data order is [curvature, velocity]
+        curvature = float(action[0])
+        velocity = float(action[1])
+
+        # Debugging
+        self.get_logger().debug(f"Inference Freq: {freq:.2f} Hz")
+        if inputs_changed:
+             self.get_logger().debug("New Inference")
+        else:
+             self.get_logger().debug(f"Reusing prediction step {self.prediction_step}")
+             
+        self.get_logger().info(f"Cmd: v={velocity:.3f}, c={curvature:.3f}")
             
-            # Extract action
-            # Assuming output is (batch, time, features) and features are [velocity, curvature]
-            # We take the first time step
-            action = output[0, 0, :]
-            velocity = float(action[0])
-            curvature = float(action[1])
-            
-            # Publish command
-            cmd_msg = AckermannCurvatureDriveMsg()
-            cmd_msg.header.stamp = self.get_clock().now().to_msg()
-            cmd_msg.header.frame_id = "base_link"
-            cmd_msg.velocity = velocity
-            cmd_msg.curvature = curvature
-            
-            self.publisher.publish(cmd_msg)
-        except Exception as e:
-            self.get_logger().error(f"Inference failed: {e}")
+        # Publish command
+        cmd_msg = AckermannCurvatureDriveMsg()
+        cmd_msg.header.stamp = self.get_clock().now().to_msg()
+        cmd_msg.header.frame_id = "base_link"
+        cmd_msg.velocity = velocity
+        cmd_msg.curvature = curvature
+        
+        self.publisher.publish(cmd_msg)
 
 def main(args=None):
     rclpy.init(args=args)
