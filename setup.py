@@ -34,6 +34,7 @@ setup(
             'process_bag = av_imitation.scripts.process_bag:main',
             'export_onnx = av_imitation.scripts.export_onnx:main',
             'inference = av_imitation.scripts.inference:main',
+            'play = av_imitation.src.play:main',
         ],
     },
 )

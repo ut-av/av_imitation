@@ -46,13 +46,13 @@ class ModelPlayer(Node):
         self.history_frames = self.meta['history_frames']
         self.color_space = self.meta['color_space']
             
-            if 'history_rate' not in self.meta or self.meta['history_rate'] is None:
-                raise RuntimeError("history_rate not found in model metadata")
-            if 'future_rate' not in self.meta or self.meta['future_rate'] is None:
-                raise RuntimeError("future_rate not found in model metadata")
-                
-            self.framerate = self.meta['history_rate']
-            self.future_rate = self.meta['future_rate']
+        if 'history_rate' not in self.meta or self.meta['history_rate'] is None:
+            raise RuntimeError("history_rate not found in model metadata")
+        if 'future_rate' not in self.meta or self.meta['future_rate'] is None:
+            raise RuntimeError("future_rate not found in model metadata")
+            
+        self.framerate = self.meta['history_rate']
+        self.future_rate = self.meta['future_rate']
 
         self.get_logger().info(f"Model expects: {self.history_frames} history frames of {self.input_width}x{self.input_height} in {self.color_space}")
         self.get_logger().info(f"Control Rate: {self.framerate}Hz (history), Planning Rate: {self.future_rate}Hz (future)")
