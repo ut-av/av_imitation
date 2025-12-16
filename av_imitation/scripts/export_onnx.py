@@ -54,12 +54,23 @@ def load_dataset_metadata(dataset_name: str) -> dict:
         num_history = len(sample.get('history_images', []))
         # Input channels = (history + 1 current) * 3 RGB channels
         result['input_channels'] = (num_history + 1) * 3
-        # Output steps = number of future actions
-        result['output_steps'] = len(sample.get('future_actions', []))
+        # Future frames = number of future actions
+        result['future_frames'] = len(sample.get('future_actions', []))
+        
+        # Get framerate from parameters
+        parameters = data.get('parameters', {})
+        if 'history_rate' not in parameters:
+            raise RuntimeError("history_rate not set")
+        if 'future_rate' not in parameters:
+            raise RuntimeError("future_rate not set")
+        result['history_rate'] = parameters['history_rate']
+        result['future_rate'] = parameters['future_rate']
         
         print(f"Inferred from dataset '{dataset_name}':")
         print(f"  History frames: {num_history}, Input channels: {result['input_channels']}")
-        print(f"  Output steps: {result['output_steps']}")
+        print(f"  Future frames: {result['future_frames']}")
+        print(f"  History Rate: {result['history_rate']} Hz")
+        print(f"  Future Rate: {result['future_rate']} Hz")
     
     return result
 
@@ -113,7 +124,6 @@ def export_to_onnx(
     output_path: str = None,
     model_type: str = None,
     input_channels: int = None,
-    output_steps: int = None,
     input_height: int = None,
     input_width: int = None,
     dropout: float = None,
@@ -129,7 +139,6 @@ def export_to_onnx(
         output_path: Path to save the .onnx model
         model_type: Type of model ('cnn', 'mlp', 'transformer') - auto-detected from metadata if not provided
         input_channels: Number of input channels - auto-detected from metadata if not provided
-        output_steps: Number of output timesteps - auto-detected from metadata if not provided
         input_height: Input image height - auto-detected from metadata if not provided
         input_width: Input image width - auto-detected from metadata if not provided
         dropout: Dropout rate - auto-detected from metadata if not provided
@@ -147,7 +156,7 @@ def export_to_onnx(
         
         # If we have a dataset name but missing input/output dimensions, load from dataset
         dataset_name = metadata.get('dataset')
-        if dataset_name and (not metadata.get('input_channels') or not metadata.get('output_steps')):
+        if dataset_name and (not metadata.get('input_channels') or not metadata.get('future_frames')):
             dataset_meta = load_dataset_metadata(dataset_name)
             # Merge dataset metadata (don't override existing values)
             for key, value in dataset_meta.items():
@@ -161,7 +170,7 @@ def export_to_onnx(
     # Use metadata values as defaults, allow command-line overrides
     model_type = model_type or metadata.get('model_type')
     input_channels = input_channels or metadata.get('input_channels')
-    output_steps = output_steps or metadata.get('output_steps')
+    future_frames = metadata.get('future_frames')
     input_height = input_height or metadata.get('input_height', 240)
     input_width = input_width or metadata.get('input_width', 320)
     dropout = dropout if dropout is not None else metadata.get('dropout', 0.1)
@@ -171,8 +180,8 @@ def export_to_onnx(
         raise ValueError("model_type is required (either via --model or from training metadata)")
     if not input_channels:
         raise ValueError("input_channels is required (either via --input-channels or from training metadata)")
-    if not output_steps:
-        raise ValueError("output_steps is required (either via --output-steps or from training metadata)")
+    if not future_frames:
+        raise ValueError("future_frames is required (from training/dataset metadata)")
     if not weights_path:
         raise ValueError("weights_path is required (either via --weights or --experiment-name)")
     
@@ -183,13 +192,29 @@ def export_to_onnx(
     
     # Create model
     print(f"Creating {model_type} model...")
+    
+    # Determine proper input channels for model instantiation
+    # CNN and MLP models expect flattened channel dimension (n_frames * channels_per_frame)
+    # while Transformer expects channels_per_frame
+    history_frames = metadata.get('history_frames') or metadata.get('n_frames', 1)
+    
+    # input_channels from metadata corresponds to C (channels per frame) as saved in main.py
+    model_input_channels = input_channels
+    
+    if model_type in ['cnn', 'mlp']:
+        # main.py: model = CNN(T * C, output_steps, dropout=args.dropout)
+        # main.py: model = MLP(T * C, output_steps, dropout=args.dropout)
+        model_input_channels = input_channels * history_frames
+        print(f"Model input channels: {input_channels} (per frame) * {history_frames} (frames) = {model_input_channels} (total)")
+    
     if model_type == 'cnn':
-        model = CNN(input_channels, output_steps, dropout=dropout)
+        model = CNN(model_input_channels, future_frames, dropout=dropout)
     elif model_type == 'mlp':
         # Load into standard MLP first, then convert to ONNX-compatible version
-        model = MLP(input_channels, output_steps, dropout=dropout)
+        model = MLP(model_input_channels, future_frames, dropout=dropout)
     elif model_type == 'transformer':
-        model = Transformer(input_channels, output_steps, dropout=dropout)
+        # Transformer keeps time dimension separate, so it uses per-frame channels
+        model = Transformer(input_channels, future_frames, dropout=dropout)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -218,7 +243,13 @@ def export_to_onnx(
     
     # Create dummy input for tracing
     # Shape: (batch_size, channels, height, width)
-    dummy_input = torch.randn(1, input_channels, input_height, input_width)
+    if model_type == 'transformer':
+        # Transformer expects 5D input: (1, n_frames, C, H, W)
+        dummy_input = torch.randn(1, history_frames, input_channels, input_height, input_width)
+    else:
+        # CNN/MLP expect 4D input: (1, total_channels, H, W)
+        # total_channels = n_frames * input_channels
+        dummy_input = torch.randn(1, model_input_channels, input_height, input_width)
     
     # Define input/output names
     input_names = ['image']
@@ -256,16 +287,18 @@ def export_to_onnx(
     metadata = {
         'model_type': model_type,
         'input_channels': input_channels,
-        'output_steps': output_steps,
         'input_height': input_height,
         'input_width': input_width,
-        'n_frames': metadata.get('n_frames', 1), # Default to 1 if not present
+        'history_frames': history_frames,
+        'future_frames': future_frames,
+        'history_rate': metadata.get('history_rate'),
+        'future_rate': metadata.get('future_rate'),
         'color_space': metadata.get('color_space', 'rgb'),
         'opset_version': opset_version,
         'source_weights': os.path.basename(weights_path),
     }
     
-    metadata_path = output_path.replace('.onnx', '_metadata.json')
+    metadata_path = output_path.replace('.onnx', '_onnx_metadata.json')
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     print(f"Metadata saved to: {metadata_path}")
@@ -280,8 +313,12 @@ def export_to_onnx(
         
         # Print model info
         print("\nModel Info:")
-        print(f"  Input: {input_names[0]} - shape: (batch, {input_channels}, {input_height}, {input_width})")
-        print(f"  Output: {output_names[0]} - shape: (batch, {output_steps}, 2)")
+        print(f"  History frames: {history_frames}")
+        if model_type == 'transformer':
+             print(f"  Input: {input_names[0]} - shape: (batch, {history_frames}, {input_channels}, {input_height}, {input_width})")
+        else:
+             print(f"  Input: {input_names[0]} - shape: (batch, {model_input_channels}, {input_height}, {input_width})")
+        print(f"  Output: {output_names[0]} - shape: (batch, {future_frames}, 2)")
         
     except ImportError:
         print("Warning: 'onnx' package not installed. Skipping verification.")
@@ -348,10 +385,6 @@ Examples:
         help='Number of input channels (auto-detected from metadata if not provided)'
     )
     parser.add_argument(
-        '--output-steps', type=int,
-        help='Number of output timesteps to predict (auto-detected from metadata if not provided)'
-    )
-    parser.add_argument(
         '--input-height', type=int,
         help='Input image height (auto-detected from metadata if not provided)'
     )
@@ -384,7 +417,6 @@ Examples:
         output_path=args.output,
         model_type=args.model,
         input_channels=args.input_channels,
-        output_steps=args.output_steps,
         input_height=args.input_height,
         input_width=args.input_width,
         dropout=args.dropout,

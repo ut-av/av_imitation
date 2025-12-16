@@ -39,9 +39,11 @@ class CNN(nn.Module):
         )
         
     def forward(self, x):
-        # x: (B, T, C, H, W)
-        B, T, C, H, W = x.shape
-        x = x.view(B, T * C, H, W)
+        # x: (B, T, C, H, W) or (B, Channels, H, W)
+        if x.dim() == 5:
+            B, T, C, H, W = x.shape
+            x = x.view(B, T * C, H, W)
+        
         x = self.features(x)
         x = self.head(x)
         # Reshape to (B, T_out, 2)
@@ -86,9 +88,7 @@ class CNNOnnx(nn.Module):
         )
         
     def forward(self, x):
-        # x: (B, T, C, H, W)
-        B, T, C, H, W = x.shape
-        x = x.view(B, T * C, H, W)
+        # x: (B, Channels, H, W)
         x = self.conv_layers(x)
         # Global average pooling using mean (ONNX compatible)
         x = x.mean(dim=[2, 3], keepdim=True)

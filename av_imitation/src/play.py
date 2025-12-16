@@ -24,29 +24,42 @@ class ModelPlayer(Node):
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         
         # Load metadata
-        metadata_path = self.model_path.replace('.onnx', '_metadata.json')
+        metadata_path = self.model_path.replace('.onnx', '_onnx_metadata.json')
         if not os.path.exists(metadata_path):
             self.get_logger().error(f"Metadata file not found: {metadata_path}")
-            # Fallback defaults
-            self.input_height = 240
-            self.input_width = 320
-            self.n_frames = 1
-        else:
-            with open(metadata_path, 'r') as f:
-                self.meta = json.load(f)
-            self.get_logger().info(f"Loaded metadata: {self.meta}")
-            self.input_height = self.meta.get('input_height', 240)
-            self.input_width = self.meta.get('input_width', 320)
-            self.n_frames = self.meta.get('n_frames', 1)
-            self.color_space = self.meta.get('color_space', 'rgb')
+            raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
-        self.get_logger().info(f"Model expects: {self.n_frames} frames of {self.input_width}x{self.input_height} in {self.color_space}")
+        with open(metadata_path, 'r') as f:
+            self.meta = json.load(f)
+        self.get_logger().info(f"Loaded metadata: {self.meta}")
+        
+        # Parse required metadata with strict checking
+        required_keys = ['input_height', 'input_width', 'history_frames', 'color_space']
+        for key in required_keys:
+            if key not in self.meta:
+                raise RuntimeError(f"'{key}' not found in model metadata")
+                
+        self.input_height = self.meta['input_height']
+        self.input_width = self.meta['input_width']
+        self.history_frames = self.meta['history_frames']
+        self.color_space = self.meta['color_space']
+            
+            if 'history_rate' not in self.meta or self.meta['history_rate'] is None:
+                raise RuntimeError("history_rate not found in model metadata")
+            if 'future_rate' not in self.meta or self.meta['future_rate'] is None:
+                raise RuntimeError("future_rate not found in model metadata")
+                
+            self.framerate = self.meta['history_rate']
+            self.future_rate = self.meta['future_rate']
+
+        self.get_logger().info(f"Model expects: {self.history_frames} history frames of {self.input_width}x{self.input_height} in {self.color_space}")
+        self.get_logger().info(f"Control Rate: {self.framerate}Hz (history), Planning Rate: {self.future_rate}Hz (future)")
 
         self.get_logger().info(f"Loading model from {self.model_path}")
         self.ort_session = ort.InferenceSession(self.model_path)
         
         # Frame history buffer
-        self.history = deque(maxlen=self.n_frames)
+        self.history = deque(maxlen=self.history_frames)
 
         self.bridge = CvBridge()
         
@@ -60,8 +73,24 @@ class ModelPlayer(Node):
         
         self.get_logger().info(f"Subscribed to {self.camera_topic}")
         self.get_logger().info("Publishing to /ackermann_curvature_drive")
+        
+        # Rate limiting state
+        self.last_process_time = rclpy.time.Time(seconds=0, clock_type=self.get_clock().clock_type)
+        
+        # Create inference timer at prediction frequency
+        self.create_timer(1.0/self.future_rate, self.inference_callback)
 
     def image_callback(self, msg):
+        # Rate limiting: only process frames at history_rate
+        now = self.get_clock().now()
+        interval_ns = 1e9 / self.framerate
+        
+        # Check if enough time has passed
+        if (now - self.last_process_time).nanoseconds < interval_ns:
+            return
+            
+        self.last_process_time = now
+
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
@@ -93,12 +122,16 @@ class ModelPlayer(Node):
         self.history.append(input_img)
         
         # Wait until we have enough frames
-        if len(self.history) < self.n_frames:
-            # Pad with the first frame or just wait? 
-            # Let's repeat the current frame until full to start immediately
-            while len(self.history) < self.n_frames:
+        if len(self.history) < self.history_frames:
+            # Pad with the first frame
+            while len(self.history) < self.history_frames:
                 self.history.appendleft(input_img)
-        
+
+    def inference_callback(self):
+        # Ensure we have enough history
+        if len(self.history) < self.history_frames:
+            return
+            
         # Stack frames in channel dimension: (T*C, H, W)
         # deque to list -> stack -> (n_frames, 3, H, W) -> reshape/concatenation
         # We want to concatenate along channel dimension

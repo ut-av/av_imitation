@@ -215,10 +215,13 @@ def train(args):
             # Save training metadata
             # Save training metadata
             
-            # Load dataset metadata to get color space
+            # Load dataset metadata to get color space and rates
             with open(metadata_file, 'r') as f:
                 ds_meta = json.load(f)
-            color_space = ds_meta.get('parameters', {}).get('channels', 'rgb')
+            ds_params = ds_meta.get('parameters', {})
+            color_space = ds_params.get('channels', 'rgb')
+            history_rate = ds_params.get('history_rate')
+            future_rate = ds_params.get('future_rate')
             
             training_meta = {
                 'model_type': args.model,
@@ -226,9 +229,11 @@ def train(args):
                 'input_channels': input_channels, # This is usually per-frame * n_frames or just total channels
                 'input_height': input_shape[3], # (B, T, C, H, W) -> H is index 3
                 'input_width': input_shape[4],  # (B, T, C, H, W) -> W is index 4
-                'n_frames': T,
+                'history_frames': T,
+                'future_frames': output_steps,
                 'color_space': color_space,
-                'output_steps': output_steps,
+                'history_rate': history_rate,
+                'future_rate': future_rate,
                 'dropout': args.dropout,
                 'best_val_loss': best_val_loss,
                 'epoch': epoch + 1,

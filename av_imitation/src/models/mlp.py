@@ -28,9 +28,11 @@ class MLP(nn.Module):
         )
         
     def forward(self, x):
-        # x: (B, T, C, H, W)
-        B, T, C, H, W = x.shape
-        x = x.view(B, T * C, H, W)
+        # x: (B, T, C, H, W) or (B, Channels, H, W)
+        if x.dim() == 5:
+            B, T, C, H, W = x.shape
+            x = x.view(B, T * C, H, W)
+        
         x = self.downsample(x)
         x = self.net(x)
         x = x.view(-1, self.output_steps, 2)
@@ -62,10 +64,8 @@ class MLPOnnx(nn.Module):
         )
         
     def forward(self, x):
-        # x: (B, T, C, H, W)
+        # x: (B, Channels, H, W)
         # Use interpolate for ONNX export compatibility
-        B, T, C, H, W = x.shape
-        x = x.view(B, T * C, H, W)
         x = F.interpolate(x, size=self.target_size, mode='bilinear', align_corners=False)
         x = self.net(x)
         x = x.view(-1, self.output_steps, 2)

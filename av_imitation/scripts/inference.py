@@ -65,6 +65,9 @@ class InferenceNode(Node):
         self.max_steering_angle = self.get_parameter('max_steering_angle').get_parameter_value().double_value
         self.max_speed = self.get_parameter('max_speed').get_parameter_value().double_value
         
+        # Default channels per frame (assuming RGB if not specified)
+        self.channels_per_frame = 3
+        
         # Validate model path
         if not self.model_path:
             self.get_logger().error('Model path not specified! Use --ros-args -p model_path:=/path/to/model.onnx')
@@ -123,6 +126,7 @@ class InferenceNode(Node):
         self.get_logger().info('Inference node initialized')
         self.get_logger().info(f'  Model: {self.model_path}')
         self.get_logger().info(f'  Input: {self.num_history_frames} frames x {self.input_height}x{self.input_width}')
+        self.get_logger().info(f'  Channels per frame: {self.channels_per_frame}')
         self.get_logger().info(f'  Image topic: {self.image_topic}')
         self.get_logger().info(f'  Drive topic: {self.drive_topic}')
         self.get_logger().info(f'  Inference rate: {self.inference_rate} Hz')
@@ -139,9 +143,17 @@ class InferenceNode(Node):
                 self.input_height = metadata['input_height']
             if metadata.get('input_width'):
                 self.input_width = metadata['input_width']
+            
+            # Load channels per frame
             if metadata.get('input_channels'):
-                # Infer num_history_frames from input_channels (assuming RGB)
-                self.num_history_frames = metadata['input_channels'] // 3
+                self.channels_per_frame = metadata['input_channels']
+                
+            # Load number of history frames
+            if metadata.get('n_frames'):
+                self.num_history_frames = metadata['n_frames']
+            elif metadata.get('input_channels'):
+                 # Legacy heuristic: if input_channels > 3 and n_frames not present, guess
+                 pass
             
             self.output_steps = metadata.get('output_steps', 10)
             self.get_logger().info(f'Loaded metadata: {metadata}')
@@ -206,17 +218,30 @@ class InferenceNode(Node):
             cv_image: OpenCV image (BGR, HxWxC)
             
         Returns:
-            Preprocessed image (RGB, CxHxW, normalized to [0, 1])
+            Preprocessed image (RGB/Gray, CxHxW, normalized to [0, 1])
         """
         # Resize
         if cv_image.shape[:2] != (self.input_height, self.input_width):
             cv_image = cv2.resize(cv_image, (self.input_width, self.input_height))
         
-        # BGR to RGB
-        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-        
+        # Color space conversion
+        if self.channels_per_frame == 1:
+            # BGR to Grayscale
+            processed_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+            # Add channel dimension: (H, W) -> (H, W, 1)
+            processed_image = np.expand_dims(processed_image, axis=2)
+        elif self.channels_per_frame == 3:
+            # BGR to RGB
+            processed_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        else:
+            # Fallback/Pass-through (e.g., if already correct or other format)
+            processed_image = cv_image
+            # Ensure it has 3 dims
+            if len(processed_image.shape) == 2:
+                processed_image = np.expand_dims(processed_image, axis=2)
+                
         # Normalize to [0, 1] and convert to float32
-        normalized = rgb_image.astype(np.float32) / 255.0
+        normalized = processed_image.astype(np.float32) / 255.0
         
         # HWC to CHW
         chw_image = np.transpose(normalized, (2, 0, 1))
