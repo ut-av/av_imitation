@@ -14,16 +14,18 @@ import json
 from collections import deque
 
 class ModelPlayer(Node):
-    def __init__(self, model_path, camera_topic):
+    def __init__(self, experiment_name, camera_topic):
         super().__init__('model_player')
         
-        self.declare_parameter('model_path', model_path)
+        self.declare_parameter('experiment_name', experiment_name)
         self.declare_parameter('camera_topic', camera_topic)
         
-        self.model_path = self.get_parameter('model_path').get_parameter_value().string_value
+        self.experiment_name = self.get_parameter('experiment_name').get_parameter_value().string_value
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         
-        # Load metadata
+        # Construct paths
+        experiment_dir = os.path.expanduser(f'~/roboracer_ws/data/experiments/{self.experiment_name}')
+        self.model_path = os.path.join(experiment_dir, 'models', 'best_model.onnx')
         metadata_path = self.model_path.replace('.onnx', '_onnx_metadata.json')
         if not os.path.exists(metadata_path):
             self.get_logger().error(f"Metadata file not found: {metadata_path}")
@@ -170,14 +172,14 @@ def main(args=None):
     rclpy.init(args=args)
     
     parser = argparse.ArgumentParser(description='Run ONNX model on car')
-    parser.add_argument('--model', type=str, required=True, help='Path to ONNX model')
+    parser.add_argument('--experiment-name', type=str, required=True, help='Name of experiment (e.g. 2025...)')
     parser.add_argument('--topic', type=str, default='/camera_0/image_raw', help='Camera topic')
     
     # Filter ROS args
     ros_args = rclpy.utilities.remove_ros_args(args)
     parsed_args = parser.parse_args(ros_args[1:]) # Skip script name
 
-    node = ModelPlayer(parsed_args.model, parsed_args.topic)
+    node = ModelPlayer(parsed_args.experiment_name, parsed_args.topic)
     
     try:
         rclpy.spin(node)
