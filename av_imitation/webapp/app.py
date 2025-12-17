@@ -11,6 +11,8 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import io
+import re
+import math
 from ament_index_python.packages import get_package_share_directory
 
 import threading
@@ -195,8 +197,15 @@ def bag_info(bag_name):
     return jsonify({"info": info, "user_meta": user_meta, "telemetry": telemetry})
 
 from amrl_msgs.msg import AckermannCurvatureDriveMsg
-
+from av_imitation.src.vesc_utils import load_vesc_config, calculate_steering, calculate_curvature
 def extract_telemetry(bag_path):
+    # --- Load Configuration ---
+    config_data = load_vesc_config()
+
+    joystick_mode = config_data.get('joystick_mode', 'both')
+    normal_speed = float(config_data.get('joystick_normal_speed', 1.0))
+    turbo_speed = float(config_data.get('joystick_turbo_speed', 2.0))
+
     reader = SequentialReader()
     storage_options = StorageOptions(uri=bag_path, storage_id='sqlite3')
     converter_options = ConverterOptions(input_serialization_format='cdr', output_serialization_format='cdr')
@@ -208,27 +217,22 @@ def extract_telemetry(bag_path):
 
     metadata = reader.get_metadata()
     joy_topic = None
-    ackermann_topic = None
+    # We IGNORE ackermann_topic now
     
     for t in metadata.topics_with_message_count:
         if 'joy' in t.topic_metadata.name:
             joy_topic = t.topic_metadata.name
-        if 'ackermann_curvature_drive' in t.topic_metadata.name:
-            ackermann_topic = t.topic_metadata.name
             
-    if not joy_topic and not ackermann_topic:
+    if not joy_topic:
         return []
 
-    topics_to_filter = []
-    if joy_topic: topics_to_filter.append(joy_topic)
-    if ackermann_topic: topics_to_filter.append(ackermann_topic)
+    topics_to_filter = [joy_topic]
 
     storage_filter = StorageFilter(topics=topics_to_filter)
     reader.set_filter(storage_filter)
 
     telemetry = []
     joy_msg_type = get_message('sensor_msgs/msg/Joy')
-    ack_msg_type = get_message('amrl_msgs/msg/AckermannCurvatureDriveMsg')
     
     # State
     current_state = {
@@ -252,12 +256,41 @@ def extract_telemetry(bag_path):
             if len(msg.axes) > 4: current_state["throttle"] = -msg.axes[4]
             if len(msg.axes) > 2: current_state["l2"] = msg.axes[2]
             if len(msg.buttons) > 4: current_state["l1"] = bool(msg.buttons[4])
-            updated = True
             
-        elif topic == ackermann_topic:
-            msg = deserialize_message(data, ack_msg_type)
-            current_state["velocity"] = msg.velocity
-            current_state["curvature"] = msg.curvature
+            # --- VESC Logic Reconstruction ---
+            turbo = False
+            if len(msg.axes) > 2 and msg.axes[2] >= 0.9:
+                turbo = True
+                
+            current_max_speed = turbo_speed if turbo else normal_speed
+            
+            steer_input = 0.0
+            drive_input = 0.0
+            
+            # Default to 'both' checks
+            if joystick_mode == 'left':
+                if len(msg.axes) > 1:
+                    steer_input = -msg.axes[0]
+                    drive_input = -msg.axes[1]
+            elif joystick_mode == 'right':
+                if len(msg.axes) > 4:
+                    steer_input = -msg.axes[3]
+                    drive_input = -msg.axes[4]
+            else: # 'both' (default)
+                if len(msg.axes) > 4:
+                    steer_input = -msg.axes[0]
+                    drive_input = -msg.axes[4]
+            
+            # Calculate final commands
+            v = drive_input * current_max_speed
+            
+            # Bezier steering
+            steering_angle = calculate_steering(steer_input, config_data)
+            c = calculate_curvature(steering_angle, config_data)
+            
+            current_state["velocity"] = v
+            current_state["curvature"] = c
+            
             updated = True
             
         if updated:

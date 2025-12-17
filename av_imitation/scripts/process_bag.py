@@ -5,13 +5,15 @@ import shutil
 from datetime import datetime
 import numpy as np
 import cv2
+import re
+import math
 from cv_bridge import CvBridge
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
 from sensor_msgs.msg import Image, CompressedImage, Joy
 from amrl_msgs.msg import AckermannCurvatureDriveMsg
-
+from av_imitation.src.vesc_utils import load_vesc_config, calculate_steering, calculate_curvature
 def main():
     parser = argparse.ArgumentParser(description="Process ROS 2 bag files for imitation learning.")
     parser.add_argument("bag_name", help="Name of the bag file (directory name) in ~/roboracer_ws/data/rosbags")
@@ -32,9 +34,17 @@ def main():
     output_dir = os.path.join(processed_base_dir, f"{args.bag_name}_{timestamp}")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Save configuration
+    # --- Load Configuration ---
+    # --- Load Configuration ---
+    config_data = load_vesc_config()
+    print(f"Loaded config: {config_data.keys()}")
+            
+    # Save combined configuration
+    final_config = vars(args)
+    final_config['driver_config'] = config_data
+    
     with open(os.path.join(output_dir, "config.json"), "w") as f:
-        json.dump(vars(args), f, indent=2)
+        json.dump(final_config, f, indent=2)
         
     # Load metadata (cuts)
     cuts = []
@@ -98,36 +108,60 @@ def main():
             cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             images.append((t_sec, cv_img))
         elif topic == ACTION_TOPIC:
-            msg = deserialize_message(data, AckermannCurvatureDriveMsg)
-            v = msg.velocity
-            c = msg.curvature
-            actions.append((t_sec, v, c))
+            # IGNORE action topic as it should be empty
+            # In the future, if we want to learn from an existing policy, to say do dataset augmentation
+            pass
         elif topic == JOY_TOPIC:
             msg = deserialize_message(data, Joy)
             joystick_msgs.append((t_sec, msg))
 
     print(f"\nLoaded {len(images)} images and {len(actions)} actions.")
     
-    # Fallback to joystick if no actions found
-    if not actions and joystick_msgs:
-        print("No actions found on command topic. Reconstructing from Joystick...")
-        # Logic from joystick_teleop.py
-        # speed = 1.0 (turbo 2.0)
-        # turn = 0.25
-        # v = -axis[4] * speed
-        # c = -axis[0] * turn
-        # We assume no turbo for now as we can't easily know the state without simulating the node
-        # But we can check axis 2 (turbo trigger)
+    # Reconstruct actions from joystick using VESC driver logic
+    if joystick_msgs:
+        print("Reconstructing actions from Joystick using VESC driver logic...")
+        
+        joystick_mode = config_data.get('joystick_mode', 'both')
+        normal_speed = float(config_data.get('joystick_normal_speed', 1.0))
+        turbo_speed = float(config_data.get('joystick_turbo_speed', 2.0))
+        
+        actions = [] # Clear any existing actions just in case
         
         for t, msg in joystick_msgs:
-            if len(msg.axes) > 4:
-                speed = 1.0
-                if len(msg.axes) > 2 and msg.axes[2] >= 0.9:
-                    speed = 2.0
+            # Check for turbo (Axis 2 >= 0.9)
+            turbo = False
+            if len(msg.axes) > 2 and msg.axes[2] >= 0.9:
+                turbo = True
                 
-                v = -msg.axes[4] * speed
-                c = -msg.axes[0] * 0.25
-                actions.append((t, v, c))
+            current_max_speed = turbo_speed if turbo else normal_speed
+            
+            # Extract inputs based on mode
+            steer_input = 0.0
+            drive_input = 0.0
+            
+            # Default to 'both' checks
+            if joystick_mode == 'left':
+                if len(msg.axes) > 1:
+                    steer_input = -msg.axes[0]
+                    drive_input = -msg.axes[1]
+            elif joystick_mode == 'right':
+                if len(msg.axes) > 4:
+                    steer_input = -msg.axes[3]
+                    drive_input = -msg.axes[4]
+            else: # 'both' (default)
+                if len(msg.axes) > 4:
+                    steer_input = -msg.axes[0]  # Left stick horizontal for steering
+                    drive_input = -msg.axes[4]  # Right stick vertical for drive
+            
+            # Calculate final commands
+            v = drive_input * current_max_speed
+            
+            # Bezier steering
+            steering_angle = calculate_steering(steer_input, config_data)
+            c = calculate_curvature(steering_angle, config_data)
+            
+            actions.append((t, v, c))
+            
         print(f"Reconstructed {len(actions)} actions from joystick.")
     
     if not images or not actions:
