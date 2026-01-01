@@ -1326,56 +1326,41 @@
                             <!-- Right: Visualization -->
                             <div style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto; position: relative;">
 
-                                <!-- Loading Overlay -->
-                                <div v-if="loadingSample" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 10; display: flex; justify-content: center; align-items: center;">
-                                    <div class="loading">Loading sample...</div>
-                                </div>
-
-                                <div v-if="currentSample" style="width: 100%;" :style="{ opacity: loadingSample ? 0.3 : 1 }">
+                                <div v-if="currentSample" style="width: 100%;">
                                     <div style="display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem;">
                                         <button @click="prevSample">Previous</button>
                                         <button @click="nextSample">Next</button>
                                     </div>
 
-                                    <div style="display: flex; gap: 1rem; justify-content: center; align-items: flex-start;">
-                                        <!-- History -->
-                                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                            <h4>History</h4>
-                                            <div v-for="(img, i) in currentSample.history_images" :key="i" style="width: 160px; height: 120px; opacity: 0.7;">
-                                                <img :src="`/api/processed_file/${img}`" :ref="collectImageRef" @load="checkLoadingStatus" @error="checkLoadingStatus" style="width: 100%; height: 100%; object-fit: contain;">
-                                            </div>
-                                        </div>
+                                    <div style="display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+                                        <div style="position: relative; width: 640px; height: 480px; background: #000; display: flex; justify-content: center; align-items: center;">
+                                            <canvas id="vizCanvas" width="640" height="480" style="max-width: 100%; max-height: 100%;"></canvas>
 
-                                        <!-- Current -->
-                                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                            <h4>Current</h4>
-                                            <div style="width: 320px; height: 240px; border: 2px solid var(--primary-color);">
-                                                <img :src="`/api/processed_file/${currentSample.current_image}`" :ref="collectImageRef" @load="checkLoadingStatus" @error="checkLoadingStatus" style="width: 100%; height: 100%; object-fit: contain;">
-                                            </div>
-                                        </div>
-
-                                        <!-- Future -->
-                                        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                                            <h4>Future</h4>
-                                            <div v-for="(img, i) in currentSample.future_images" :key="i" style="width: 160px; height: 120px; position: relative;">
-                                                <img :src="`/api/processed_file/${img}`" :ref="collectImageRef" @load="checkLoadingStatus" @error="checkLoadingStatus" style="width: 100%; height: 100%; object-fit: contain;">
-                                                <!-- Overlay Action -->
-                                                <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 20px; background: rgba(0,0,0,0.5); display: flex;">
-                                                    <div style="flex: 1; position: relative; border-right: 1px solid #555;">
-                                                        <!-- Steer -->
-                                                        <div style="position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #555;">
-                                                        </div>
-                                                        <div :style="getSteerStyle(currentSample.future_actions[i][0])" style="position: absolute; top: 2px; bottom: 2px; background: var(--primary-color);">
-                                                        </div>
-                                                    </div>
-                                                    <div style="flex: 1; position: relative;">
-                                                        <!-- Throttle -->
-                                                        <div style="position: absolute; top: 0; bottom: 0; left: 0; width: 100%; background: #333;">
-                                                            <div :style="{ width: (currentSample.future_actions[i][1] * 100) + '%', height: '100%', background: 'var(--secondary-color)' }">
-                                                            </div>
-                                                        </div>
-                                                    </div>
+                                            <!-- Overlay Controls -->
+                                            <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); padding: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+                                                <div style="display: flex; align-items: center; gap: 1rem;">
+                                                    <button @click="toggleVizPlay" style="background: none; border: none; color: white; cursor: pointer; font-size: 1.2rem;">
+                                                        [[ isVizPlaying ? '⏸' : '▶' ]]
+                                                    </button>
+                                                    <span style="font-size: 0.9rem; color: white;">
+                                                        [[ vizStatus ]]
+                                                    </span>
                                                 </div>
+                                                <div style="font-size: 0.8rem; color: #aaa;">
+                                                    [[ currentSample ? currentSample.timestamp.toFixed(3) : '0.000' ]]s
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div style="display: flex; gap: 1rem; width: 640px; flex-wrap: wrap; justify-content: space-between;">
+                                            <div>
+                                                <strong>Velocity:</strong> [[ currentVizVelocity !== null ? currentVizVelocity.toFixed(2) : '--' ]] m/s
+                                            </div>
+                                            <div>
+                                                <strong>Curvature:</strong> [[ currentVizCurvature !== null ? currentVizCurvature.toFixed(3) : '--' ]]
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                                <label><input type="checkbox" v-model="autoPlayViz"> Auto-play next</label>
                                             </div>
                                         </div>
                                     </div>

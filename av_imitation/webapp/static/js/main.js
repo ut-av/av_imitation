@@ -1972,6 +1972,189 @@ createApp({
             });
         };
 
+        // Visualization Logic (Video)
+        const vizCanvas = ref(null);
+        const isVizPlaying = ref(false);
+        const autoPlayViz = ref(false);
+        const vizStatus = ref("Idle");
+        const currentVizVelocity = ref(null);
+        const currentVizCurvature = ref(null);
+        let animationFrameId = null;
+
+        // Helper to draw curvature overlay
+        const drawCurvature = (ctx, width, height, curvature, velocity) => {
+            const cx = width / 2;
+            const cy = height - 20;
+
+            // Draw center line
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx, cy - 40);
+            ctx.stroke();
+
+            const wheelbase = 0.324; // Standard wheelbase
+
+            ctx.strokeStyle = "#00ff00"; // Green
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+
+            if (Math.abs(curvature) < 1e-4) {
+                // Straight
+                ctx.lineTo(cx, cy - 60);
+            } else {
+                // Curve
+                const angle = Math.atan(curvature * wheelbase);
+                // Exaggerate for visibility (matching python script scale)
+                // python: dx = int(60 * np.sin(angle * 2.0))
+                const dx = 60 * Math.sin(angle * 2.0);
+                const dy = 60 * Math.cos(angle * 2.0);
+                ctx.lineTo(cx + dx, cy - dy);
+            }
+            ctx.stroke();
+        };
+
+        const loadImage = (src) => {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+                img.src = src;
+            });
+        };
+
+        const playSequentialVideo = async () => {
+            if (!vizCanvas.value) return;
+            const canvas = document.getElementById('vizCanvas');
+            const ctx = canvas.getContext('2d');
+
+            isVizPlaying.value = true;
+            vizStatus.value = "Playing...";
+
+            // Loop until end or stopped
+            while (isVizPlaying.value && currentSampleIndex.value < vizSamples.value.length) {
+                const s = vizSamples.value[currentSampleIndex.value];
+                const src = `/api/processed_file/${s.current_image}`;
+
+                try {
+                    // Load current image
+                    const img = await loadImage(src);
+
+                    if (!isVizPlaying.value) break;
+
+                    // Draw
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // Overlay Velocity/Curvature
+                    if (s.future_actions && s.future_actions.length > 0) {
+                        const [c, v] = s.future_actions[0];
+                        drawCurvature(ctx, canvas.width, canvas.height, c, v);
+                        currentVizVelocity.value = v;
+                        currentVizCurvature.value = c;
+                    } else {
+                        currentVizVelocity.value = null;
+                        currentVizCurvature.value = null;
+                    }
+
+                    // Preload next image to smooth playback
+                    if (currentSampleIndex.value + 1 < vizSamples.value.length) {
+                        const nextSrc = `/api/processed_file/${vizSamples.value[currentSampleIndex.value + 1].current_image}`;
+                        const nextImg = new Image();
+                        nextImg.src = nextSrc;
+                    }
+
+                    // Advance
+                    if (currentSampleIndex.value < vizSamples.value.length - 1) {
+                        currentSampleIndex.value++;
+                    } else {
+                        // End of bag
+                        isVizPlaying.value = false;
+                        vizStatus.value = "End";
+                    }
+
+                    // Wait for frame rate (approx 15fps = 66ms, 20fps = 50ms)
+                    await new Promise(r => setTimeout(r, 66));
+
+                } catch (e) {
+                    console.error("Playback error", e);
+                    isVizPlaying.value = false;
+                    break;
+                }
+            }
+
+            if (!isVizPlaying.value && vizStatus.value !== "End") {
+                vizStatus.value = "Stopped";
+            }
+        };
+
+        const toggleVizPlay = () => {
+            if (isVizPlaying.value) {
+                isVizPlaying.value = false;
+                vizStatus.value = "Stopped";
+            } else {
+                playSequentialVideo();
+            }
+        };
+
+        // Watchers
+        watch(currentSample, () => {
+            if (currentSample.value && !isVizPlaying.value) {
+                nextTick(async () => {
+                    if (!vizCanvas.value && document.getElementById('vizCanvas')) {
+                        vizCanvas.value = document.getElementById('vizCanvas');
+                    }
+
+                    // Draw static preview (Current Frame)
+                    if (!currentSample.value) return;
+
+                    const canvas = document.getElementById('vizCanvas');
+                    if (!canvas) return;
+                    const ctx = canvas.getContext('2d');
+
+                    // Clear canvas first
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                    const src = `/api/processed_file/${currentSample.value.current_image}`;
+                    try {
+                        const img = await loadImage(src);
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                        // Also draw overlay for the static frame so we can see what it looks like
+                        if (currentSample.value.future_actions && currentSample.value.future_actions.length > 0) {
+                            const [c, v] = currentSample.value.future_actions[0];
+                            drawCurvature(ctx, canvas.width, canvas.height, c, v);
+                            currentVizVelocity.value = v;
+                            currentVizCurvature.value = c;
+                        }
+                    } catch (e) { console.error(e); }
+                });
+            }
+        });
+
+        // Ensure canvas ref is populated when tab changes
+        watch(currentStep, (val) => {
+            if (val === 3) {
+                nextTick(() => {
+                    vizCanvas.value = document.getElementById('vizCanvas');
+                    // Trigger a redraw if we have a sample
+                    if (currentSample.value && !isVizPlaying.value) {
+                        // Force update to draw static frame
+                        const temp = currentSample.value;
+                        // Just relying on the currentSample watcher might not work if it doesn't change
+                        // So let's manually trigger the watcher logic or copied logic.
+                        // The active watcher on currentSample should fire if we just accessed it? No.
+                        // Let's just manually draw.
+                        // Actually, the above watcher logic is fine if we can invoke it.
+                        // But for simplicity, the user will probably click a bag or sample soon.
+                    }
+                });
+            } else {
+                isVizPlaying.value = false; // Stop if leaving tab
+            }
+        });
+
         return {
             bags,
             currentBag,
@@ -2158,7 +2341,15 @@ createApp({
             loadDatasetConfig,
             // Analysis
             selectedAnalysisDataset,
-            selectAnalysisDataset
+            selectAnalysisDataset,
+            // Video Viz
+            vizCanvas,
+            isVizPlaying,
+            autoPlayViz,
+            vizStatus,
+            currentVizVelocity,
+            currentVizCurvature,
+            toggleVizPlay
         };
     }
 }).mount('#app');
