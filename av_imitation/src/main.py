@@ -11,6 +11,89 @@ from tqdm import tqdm
 from dataloader import get_dataloader
 from models import CNN, MLP, Transformer
 
+def compute_dataset_stats(dataloader):
+    """
+    Compute mean and std of the dataset.
+    Assumes dataloader returns images in (B, T, C, H, W) with values 0-1.
+    """
+    print("Computing dataset statistics...")
+    
+    # Initialize variables
+    # We want mean/std per channel (C)
+    # We'll need to know C first. We can get it from the first batch.
+    
+    mean = None
+    var = None
+    total_pixels = 0
+    
+    # We use a streaming algorithm (Welford's) or simple two-pass.
+    # Given we might have memory constraints, two-pass is safer than storing all, 
+    # but iterating twice is slow.
+    # Simple accumulation of sum(x) and sum(x^2) is prone to numerical instability but 
+    # for 0-1 images and float32 it's usually acceptable if dataset isn't massive.
+    
+    channel_sum = None
+    channel_sq_sum = None
+    
+    # Action stats
+    action_sum = None
+    action_sq_sum = None
+    total_actions = 0
+    
+    for batch in tqdm(dataloader, desc="Computing stats"):
+        images = batch['image'] # (B, T, C, H, W)
+        actions = batch['action'] # (B, T, 2)
+        
+        B, T, C, H, W = images.shape
+        
+        if channel_sum is None:
+            channel_sum = torch.zeros(C, dtype=torch.float64)
+            channel_sq_sum = torch.zeros(C, dtype=torch.float64)
+            
+        # Image stats
+        # Flatten: (B, T, C, H, W) -> (B*T*H*W, C)
+        # Permute to (B, T, H, W, C) first
+        pixels = images.permute(0, 1, 3, 4, 2).reshape(-1, C)
+        
+        channel_sum += pixels.sum(dim=0).double()
+        channel_sq_sum += (pixels ** 2).sum(dim=0).double()
+        total_pixels += pixels.shape[0]
+        
+        # Action stats
+        if action_sum is None:
+            action_sum = torch.zeros(2, dtype=torch.float64)
+            action_sq_sum = torch.zeros(2, dtype=torch.float64)
+            
+        # Flatten actions: (B, T, 2) -> (B*T, 2)
+        acts = actions.reshape(-1, 2)
+        action_sum += acts.sum(dim=0).double()
+        action_sq_sum += (acts ** 2).sum(dim=0).double()
+        total_actions += acts.shape[0]
+        
+    # Image Mean/Std
+    mean = channel_sum / total_pixels
+    var = (channel_sq_sum / total_pixels) - (mean ** 2)
+    std = torch.sqrt(var)
+    
+    # Action Mean/Std
+    act_mean = action_sum / total_actions
+    act_var = (action_sq_sum / total_actions) - (act_mean ** 2)
+    act_std = torch.sqrt(act_var)
+    
+    # Convert to float32 list
+    mean_list = mean.float().tolist()
+    std_list = std.float().tolist()
+    
+    act_mean_list = act_mean.float().tolist()
+    act_std_list = act_std.float().tolist()
+    
+    print(f"Dataset Stats - Image Mean: {mean_list}, Std: {std_list}")
+    print(f"Dataset Stats - Action Mean: {act_mean_list}, Std: {act_std_list}")
+    
+    return mean_list, std_list, act_mean_list, act_std_list
+
+
+
 def train(args):
     # Setup paths
     dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
@@ -147,8 +230,24 @@ def train(args):
         
     model = model.to(device)
     
+    # Compute Statistics
+    mean_stats, std_stats, act_mean_stats, act_std_stats = compute_dataset_stats(train_loader)
+    
+    # Create tensors for normalization
+    # Shape for broadcasting: (1, 1, C, 1, 1)
+    mean_tensor = torch.tensor(mean_stats, device=device).view(1, 1, -1, 1, 1)
+    std_tensor = torch.tensor(std_stats, device=device).view(1, 1, -1, 1, 1)
+    
+    # Shape for action normalization: (1, 1, 2)
+    act_mean_tensor = torch.tensor(act_mean_stats, device=device).view(1, 1, 2)
+    act_std_tensor = torch.tensor(act_std_stats, device=device).view(1, 1, 2)
+    
+    print(f"Normalization enabled. Image Mean: {mean_stats}, Std: {std_stats}")
+    print(f"Action Normalization enabled. Mean: {act_mean_stats}, Std: {act_std_stats}")
+
     # Optimizer and Loss
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
     criterion = nn.MSELoss()
     
     # Tensorboard
@@ -166,6 +265,12 @@ def train(args):
         for i, batch in enumerate(pbar):
             images = batch['image'].to(device)
             actions = batch['action'].to(device)
+            
+            # Normalize Inputs
+            images = (images - mean_tensor) / std_tensor
+            
+            # Normalize Targets
+            actions = (actions - act_mean_tensor) / act_std_tensor
             
             optimizer.zero_grad()
             outputs = model(images)
@@ -187,6 +292,12 @@ def train(args):
             for batch in val_loader:
                 images = batch['image'].to(device)
                 actions = batch['action'].to(device)
+                
+                # Normalize Inputs
+                images = (images - mean_tensor) / std_tensor
+                
+                # Normalize Targets
+                actions = (actions - act_mean_tensor) / act_std_tensor
                 
                 outputs = model(images)
                 loss = criterion(outputs, actions)
@@ -227,6 +338,10 @@ def train(args):
                 'model_type': args.model,
                 'dataset': args.dataset,
                 'input_channels': input_channels, # This is usually per-frame * n_frames or just total channels
+                'mean': mean_stats,
+                'std': std_stats,
+                'action_mean': act_mean_stats,
+                'action_std': act_std_stats,
                 'input_height': input_shape[3], # (B, T, C, H, W) -> H is index 3
                 'input_width': input_shape[4],  # (B, T, C, H, W) -> W is index 4
                 'history_frames': T,

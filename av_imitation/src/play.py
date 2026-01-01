@@ -57,6 +57,30 @@ class ModelPlayer(Node):
         self.get_logger().info(f"Model expects: {self.history_frames} history frames of {self.input_width}x{self.input_height} in {self.color_space}")
         self.get_logger().info(f"Control Rate: {self.framerate}Hz (history), Planning Rate: {self.future_rate}Hz (future)")
 
+        # Load normalization parameters
+        if 'mean' in self.meta and 'std' in self.meta:
+            self.mean = np.array(self.meta['mean'], dtype=np.float32).reshape(-1, 1, 1)
+            self.std = np.array(self.meta['std'], dtype=np.float32).reshape(-1, 1, 1)
+            self.get_logger().info(f"Loaded normalization parameters. Mean shape: {self.mean.shape}")
+        else:
+            if self.color_space == 'gray':
+                c = 1
+            else:
+                c = 3
+            self.mean = np.zeros((c, 1, 1), dtype=np.float32)
+            self.std = np.ones((c, 1, 1), dtype=np.float32)
+            self.get_logger().warn("Normalization parameters not found in metadata. Using default (0 mean, 1 std).")
+            
+        # Output Normalization
+        if 'action_mean' in self.meta and 'action_std' in self.meta:
+            self.action_mean = np.array(self.meta['action_mean'], dtype=np.float32)
+            self.action_std = np.array(self.meta['action_std'], dtype=np.float32)
+            self.get_logger().info(f"Loaded ALL action normalization parameters.")
+        else:
+            self.action_mean = np.array([0.0, 0.0], dtype=np.float32)
+            self.action_std = np.array([1.0, 1.0], dtype=np.float32)
+            self.get_logger().warn("Action normalization parameters not found. Using raw output.")
+
         self.get_logger().info(f"Loading model from {self.model_path}")
         self.ort_session = ort.InferenceSession(self.model_path)
         
@@ -128,6 +152,9 @@ class ModelPlayer(Node):
         # Transpose to (C, H, W)
         input_img = input_img.transpose(2, 0, 1) # (C, H, W)
         
+        # Apply Normalization
+        input_img = (input_img - self.mean) / self.std
+        
         # Update history
         self.history.append(input_img)
         
@@ -185,10 +212,14 @@ class ModelPlayer(Node):
                 return
         
         # Extract action
-        action = self.current_prediction[self.prediction_step]
+        action_raw = self.current_prediction[self.prediction_step]
+        
+        # Un-scale action
+        action_unscaled = action_raw * self.action_std + self.action_mean
+        
         # Training data order is [curvature, velocity]
-        curvature = float(action[0])
-        velocity = float(action[1])
+        curvature = float(action_unscaled[0])
+        velocity = float(action_unscaled[1])
 
         # Debugging
         self.get_logger().debug(f"Inference Freq: {freq:.2f} Hz")

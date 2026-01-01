@@ -1305,6 +1305,31 @@ def run_inference():
     with open(training_meta_path, 'r') as f:
         train_meta = json.load(f)
         
+    # Get Normalization Parameters
+    mean = train_meta.get('mean')
+    std = train_meta.get('std')
+    
+    # Get Action Normalization Parameters
+    act_mean = train_meta.get('action_mean')
+    act_std = train_meta.get('action_std')
+    
+    mean_np = None
+    std_np = None
+    act_mean_np = None
+    act_std_np = None
+    mean_tensor = None
+    std_tensor = None
+    
+    if mean and std:
+        mean_np = np.array(mean, dtype=np.float32).reshape(1, 1, -1, 1, 1)
+        std_np = np.array(std, dtype=np.float32).reshape(1, 1, -1, 1, 1)
+        
+    if act_mean and act_std:
+        act_mean_np = np.array(act_mean, dtype=np.float32).reshape(1, 1, 2)
+        act_std_np = np.array(act_std, dtype=np.float32).reshape(1, 1, 2)
+        print(f"Inference with normalization. Image Mean: {mean}, Action Mean: {act_mean}")
+
+        
     # Setup Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1330,6 +1355,10 @@ def run_inference():
                 images = batch['image'].numpy() # (B, T, C, H, W)
                 actions = batch['action'].numpy() # (B, T, 2)
                 
+                # Normalize if metadata available
+                if mean_np is not None:
+                     images = (images - mean_np) / std_np
+                
                 # Preprocess for ONNX: Flatten T into C -> (B, T*C, H, W)
                 B, T, C, H, W = images.shape
                 images_flat = images.reshape(B, T*C, H, W)
@@ -1337,6 +1366,10 @@ def run_inference():
                 # Run Inference
                 ort_inputs = {input_name: images_flat}
                 outputs = ort_session.run(None, ort_inputs)[0] # (B, T_out, 2)
+                
+                # Un-scale predictions if needed
+                if act_mean_np is not None:
+                     outputs = outputs * act_std_np + act_mean_np
                 
                 # Collect
                 # We are interested in comparison. 
@@ -1381,6 +1414,11 @@ def run_inference():
                         output_steps = actions.shape[1]
                         dropout = train_meta.get('dropout', 0.1) # Default
                         
+                        # Prepare normalization tensors for PyTorch
+                        if mean is not None:
+                             mean_tensor = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
+                             std_tensor = torch.tensor(std, device=device).view(1, 1, -1, 1, 1)
+                        
                         if model_type == 'cnn':
                             model = CNN(T * C, output_steps, dropout=dropout)
                         elif model_type == 'mlp':
@@ -1395,9 +1433,22 @@ def run_inference():
                         model.eval()
                         model_initialized = True
                         
+                    # Normalize
+                    if mean_tensor is not None:
+                        images = (images - mean_tensor) / std_tensor
+                        
                     outputs = model(images)
                     
-                    all_preds.append(outputs.cpu().numpy())
+                    # Un-scale predictions (tensor to numpy first or unscale tensor then numpy? simpler to unscale tensor)
+                    # Need action mean/std tensors
+                    if act_mean_np is not None:
+                         # Lazy tensor creation or just use numpy post-process
+                         outputs = outputs.cpu().numpy()
+                         outputs = outputs * act_std_np + act_mean_np
+                         all_preds.append(outputs)
+                    else:
+                         all_preds.append(outputs.cpu().numpy())
+
                     all_gt.append(actions.cpu().numpy())
                     
         # Concatenate results

@@ -294,6 +294,10 @@ def export_to_onnx(
         'history_rate': metadata.get('history_rate'),
         'future_rate': metadata.get('future_rate'),
         'color_space': metadata.get('color_space', 'rgb'),
+        'mean': metadata.get('mean'),
+        'std': metadata.get('std'),
+        'action_mean': metadata.get('action_mean'),
+        'action_std': metadata.get('action_std'),
         'opset_version': opset_version,
         'source_weights': os.path.basename(weights_path),
     }
