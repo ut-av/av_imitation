@@ -2077,17 +2077,55 @@ createApp({
             ctx.beginPath();
             ctx.moveTo(cx, cy);
 
-            if (Math.abs(curvature) < 1e-4) {
-                // Straight
-                ctx.lineTo(cx, cy - 60);
-            } else {
-                // Curve
-                const angle = Math.atan(curvature * wheelbase);
-                // Exaggerate for visibility (matching python script scale)
-                // python: dx = int(60 * np.sin(angle * 2.0))
-                const dx = 60 * Math.sin(angle * 2.0);
-                const dy = 60 * Math.cos(angle * 2.0);
-                ctx.lineTo(cx + dx, cy - dy);
+            // Draw Spline (Path Integration) matching vesc_driver.cpp kinematics
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+
+            // Simulation parameters
+            const dt = 0.05; // Time step
+            const horizon = 1.0; // Prediction horizon in seconds
+            const scale = 100.0; // Pixels per meter (heuristic)
+
+            let sim_x = 0;
+            let sim_y = 0;
+            let sim_theta = Math.PI / 2; // Start facing UP
+
+            // v is passed in. If v is 0 (or null), assume a default speed for visualization shape
+            let sim_v = velocity;
+            if (!sim_v || Math.abs(sim_v) < 0.1) sim_v = 1.0;
+
+            for (let t = 0; t < horizon; t += dt) {
+                // Kinematics from vesc_driver.cpp updateOdometry
+                // del_x = v * dt * cos(theta)
+                // del_y = v * dt * sin(theta)
+                // del_theta = v * k * dt
+
+                const dist = sim_v * dt;
+                const del_x = dist * Math.cos(sim_theta);
+                const del_y = dist * Math.sin(sim_theta);
+                const del_theta = dist * curvature;
+
+                sim_x += del_x;
+                sim_y += del_y;
+                sim_theta += del_theta;
+
+                // Project to Canvas (Top-down approximation)
+                // Canvas X = cx - sim_x * scale (Note: Inverted X for Left Turn = Left Draw)
+                // Wait, simulation: theta=PI/2 (Up).
+                // Left Turn (Positive Curvature) -> theta increases (+) -> turns Left (towards PI).
+                // cos(PI) = -1. So x becomes negative.
+                // We want Left Turn to be drawn Left (Canvas X < cx).
+                // So Canvas X = cx + sim_x * scale.
+                // Let's trace:
+                // Start: x=0, y=0, th=PI/2.
+                // Step 1: k>0. th increases to PI/2 + e. (Quadrant 2).
+                // cos(Q2) is Negative. sin(Q2) is Positive.
+                // dx is Neg, dy is Pos.
+                // x becomes Neg. y becomes Pos.
+                // Canvas X = cx + x (Neg) -> Left. Correct.
+                // Canvas Y = cy - y (Pos) -> Up. Correct.
+
+                ctx.lineTo(cx + sim_x * scale, cy - sim_y * scale);
             }
             ctx.stroke();
         };
