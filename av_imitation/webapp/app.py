@@ -1003,7 +1003,7 @@ def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, h
                         break
                         
                     entry = telemetry[idx]
-                    future_actions.append([entry['steer'], entry['throttle']])
+                    future_actions.append([entry['curvature'], entry['velocity']])
                     
                     img_idx = (np.abs(image_times - target_t)).argmin()
                     closest_img_t = image_times[img_idx]
