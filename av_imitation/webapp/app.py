@@ -18,6 +18,7 @@ import sys
 import subprocess
 import yaml
 import torch
+import torch.onnx
 import onnxruntime as ort
 from torch.utils.data import DataLoader
 # Add src to path to import local modules
@@ -29,7 +30,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../src'))
 # So this append should work if executed from app.py.
 
 from dataloader import get_dataloader, AVDataset
-from models import CNN, MLP, Transformer
+from models import CNN, MLP, Transformer, CNNOnnx, MLPOnnx, TransformerOnnx
 
 
 import threading
@@ -1226,8 +1227,8 @@ def list_experiments():
     if not os.path.exists(experiments_dir):
         return jsonify([])
     experiments = [d for d in os.listdir(experiments_dir) if os.path.isdir(os.path.join(experiments_dir, d))]
-    # Sort by date (newest first)
-    experiments.sort(reverse=True)
+    # Sort by creation date (newest first)
+    experiments.sort(key=lambda x: os.path.getctime(os.path.join(experiments_dir, x)), reverse=True)
     
     experiment_data = []
     for exp in experiments:
@@ -1260,18 +1261,143 @@ def convert_to_onnx():
     if not experiment_name:
         return jsonify({'error': 'Experiment name required'}), 400
         
-    script_path = os.path.expanduser('~/roboracer_ws/src/av_imitation/av_imitation/src/export_onnx.py')
-    
     try:
-        # Run export_onnx.py script
-        cmd = [sys.executable, script_path, '--experiment', experiment_name]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Paths
+        experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+        exp_path = os.path.join(experiments_dir, experiment_name)
+        if not os.path.exists(exp_path):
+             return jsonify({'error': 'Experiment not found'}), 404
+             
+        models_path = os.path.join(exp_path, 'models')
+        if not os.path.exists(models_path):
+             models_path = exp_path # Fallback
+             
+        weights_path = os.path.join(models_path, 'best_model.pth')
+        output_path = os.path.join(models_path, 'best_model.onnx')
+        training_meta_path = os.path.join(models_path, 'training_metadata.json')
         
-        if result.returncode != 0:
-            return jsonify({'error': f'Conversion failed: {result.stderr}'}), 500
+        if not os.path.exists(training_meta_path):
+             # Try root
+             training_meta_path = os.path.join(exp_path, 'training_metadata.json')
+             
+        if not os.path.exists(training_meta_path):
+             return jsonify({'error': 'Training metadata not found'}), 404
+
+        with open(training_meta_path, 'r') as f:
+            meta = json.load(f)
             
-        return jsonify({'success': True, 'output': result.stdout})
+        # Extract params
+        model_type = meta.get('model', 'cnn') # 'model' key in main.py, 'model_type' in script? main.py saves 'model'
+        # Check inferred from name if missing
+        if 'model' not in meta and 'model_type' not in meta:
+             parts = experiment_name.split('_')
+             if len(parts) >= 3 and parts[2] in ['cnn', 'mlp', 'transformer']:
+                 model_type = parts[2]
+        
+        # We need input dims. main.py saves them?
+        # main.py saves: history_rate, future_rate, model, etc.
+        # It DOES NOT seem to save input_channels explicitely in the simple metadata dict shown in earlier logs?
+        # Let's assume it does or we can infer from dataset.
+        
+        input_channels = meta.get('input_channels')
+        output_steps = meta.get('output_steps', meta.get('future_frames'))
+        
+        # If missing, try to load from dataset metadata
+        if not input_channels or not output_steps:
+             dataset_name = meta.get('dataset')
+             if dataset_name:
+                 dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+                 ds_meta_path = os.path.join(dataset_dir, f"{dataset_name}.json")
+                 if os.path.exists(ds_meta_path):
+                     with open(ds_meta_path, 'r') as f:
+                         ds_data = json.load(f)
+                         # Infer
+                         samples = ds_data.get('samples', [])
+                         if samples:
+                             s = samples[0]
+                             n_history = len(s.get('history_images', []))
+                             if not input_channels:
+                                 input_channels = (n_history + 1) * 3
+                             if not output_steps:
+                                 output_steps = len(s.get('future_actions', []))
+        
+        if not input_channels: input_channels = 3 # Default fallback? Bad idea.
+        if not output_steps: output_steps = 10
+        
+        dropout = meta.get('dropout', 0.1)
+        history_frames = meta.get('history_frames', 1)
+        # Fix history_frames if it's 1 but we used N history images causing Channels to be large?
+        # If input_channels > 3, we know history matches.
+        
+        # Instantiate Model
+        # Logic from export_onnx.py
+        model_input_channels = input_channels
+        if model_type in ['cnn', 'mlp']:
+             # CNN/MLP take flattened channels: (B, T*C, H, W)
+             # input_channels from metadata is per-frame (C)
+             # history_frames is T
+             # So we must multiply them
+             model_input_channels = input_channels * history_frames
+        
+        device = torch.device('cpu')
+        
+        model = None
+        if model_type == 'cnn':
+            model = CNN(model_input_channels, output_steps, dropout=dropout)
+        elif model_type == 'mlp':
+            model = MLP(model_input_channels, output_steps, dropout=dropout)
+        elif model_type == 'transformer':
+             model = Transformer(input_channels, output_steps, dropout=dropout)
+             
+        model.load_state_dict(torch.load(weights_path, map_location=device))
+        model.eval()
+        
+        # Convert to Onnx Wrapper
+        if model_type == 'cnn':
+            model = CNNOnnx.from_cnn(model)
+        elif model_type == 'mlp':
+            model = MLPOnnx.from_mlp(model)
+        elif model_type == 'transformer':
+            model = TransformerOnnx.from_transformer(model)
+            
+        model.eval()
+        
+        # Dummy Input
+        # (1, C, H, W)
+        H = meta.get('input_height', 240)
+        W = meta.get('input_width', 320)
+        
+        if model_type == 'transformer':
+             # Transformer expects: (B, T, C, H, W)
+             dummy_input = torch.randn(1, history_frames, input_channels, H, W)
+        else:
+             # CNN/MLP expects: (B, C_total, H, W)
+             dummy_input = torch.randn(1, model_input_channels, H, W)
+        
+        # Export
+        torch.onnx.export(
+            model,
+            dummy_input,
+            output_path,
+            export_params=True,
+            opset_version=11,
+            do_constant_folding=True,
+            input_names=['image'],
+            output_names=['actions'],
+            dynamic_axes={'image': {0: 'batch_size'}, 'actions': {0: 'batch_size'}}
+        )
+        
+        # Save ONNX metadata
+        onnx_meta = meta.copy()
+        onnx_meta['exported_from'] = weights_path
+        with open(output_path.replace('.onnx', '_onnx_metadata.json'), 'w') as f:
+            json.dump(onnx_meta, f, indent=2)
+            
+        return jsonify({'success': True, 'output': f"Model exported to {output_path}"})
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/inference', methods=['POST'])
