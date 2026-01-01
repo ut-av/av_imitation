@@ -1105,20 +1105,25 @@ def list_datasets():
         return jsonify([])
         
     datasets = []
-    for f in os.listdir(DATASETS_DIR):
-        if f.endswith('.json'):
-            try:
-                with open(os.path.join(DATASETS_DIR, f), 'r') as file:
-                    data = json.load(file)
-                    if 'dataset_name' in data:
-                        datasets.append({
-                            "dataset_name": data['dataset_name'],
-                            "source_bags": data.get('source_bags', []),
-                            "samples_count": len(data.get('samples', [])),
-                            "parameters": data.get('parameters', {})
-                        })
-            except:
-                pass
+    # Get all json files
+    files = [f for f in os.listdir(DATASETS_DIR) if f.endswith('.json')]
+    
+    # Sort by modification time (descending)
+    files.sort(key=lambda x: os.path.getmtime(os.path.join(DATASETS_DIR, x)), reverse=True)
+    
+    for f in files:
+        try:
+            with open(os.path.join(DATASETS_DIR, f), 'r') as file:
+                data = json.load(file)
+                if 'dataset_name' in data:
+                    datasets.append({
+                        "dataset_name": data['dataset_name'],
+                        "source_bags": data.get('source_bags', []),
+                        "samples_count": len(data.get('samples', [])),
+                        "parameters": data.get('parameters', {})
+                    })
+        except:
+            pass
                 
     return jsonify(datasets)
 
