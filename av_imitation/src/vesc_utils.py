@@ -11,7 +11,7 @@ def parse_lua_config(content):
     config = {}
     
     # Regex for assignments: variable = value;
-    pattern = re.compile(r'(\w+)\s*=\s*([^;]+);')
+    pattern = re.compile(r'(\w+)\s*=\s*([^;\n]+);?')
     
     for match in pattern.finditer(content):
         key = match.group(1)

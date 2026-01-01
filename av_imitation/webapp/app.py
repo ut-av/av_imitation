@@ -181,11 +181,19 @@ def bag_info(bag_name):
     telemetry = []
     if os.path.exists(telemetry_path):
         try:
-            with open(telemetry_path, 'r') as f:
-                telemetry = json.load(f)
+             with open(telemetry_path, 'r') as f:
+                 telemetry = json.load(f)
+             
+             # Check for staleness (zeros where there should be values)
+             for e in telemetry[::20]: # Check sample
+                 if e.get('velocity', 0) == 0 and abs(e.get('throttle', 0)) > 0.1:
+                     print(f"Detected stale telemetry for {bag_name} (zero velocity). Regenerating.")
+                     telemetry = [] # Force regen
+                     break
         except:
-            pass
-    else:
+             pass
+
+    if not telemetry: # Regenerate if empty or stale
         # Extract telemetry if not found
         telemetry = extract_telemetry(bag_path)
         if telemetry:
@@ -857,6 +865,17 @@ def run_processing(bag_name, bag_path, output_dir, options):
             
     print(f"Finished processing {count} frames")
     
+    # Regenerate telemetry
+    try:
+        print(f"Regenerating telemetry for {bag_name}...")
+        telemetry = extract_telemetry(bag_path)
+        telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
+        with open(telemetry_path, 'w') as f:
+            json.dump(telemetry, f, indent=2)
+        print(f"Telemetry saved to {telemetry_path}")
+    except Exception as e:
+        print(f"Error regenerating telemetry: {e}")
+    
     # Force update mtime of the directory so "Processed on" updates
     try:
         images_dir = os.path.join(output_dir, "images")
@@ -939,12 +958,25 @@ def generate_dataset_thread(job_id, selected_bags, dataset_name, history_rate, h
             # Load telemetry
             telemetry_path = os.path.join(PROCESSED_DIR, f"{bag_name}_telemetry.json")
             
-            if not os.path.exists(telemetry_path):
-                print(f"Telemetry not found for {bag_name}")
-                continue
+            if os.path.exists(telemetry_path):
+                with open(telemetry_path, 'r') as f:
+                    telemetry = json.load(f)
                 
-            with open(telemetry_path, 'r') as f:
-                telemetry = json.load(f)
+                # Check staleness
+                for e in telemetry[::20]:
+                    if e.get('velocity', 0) == 0 and abs(e.get('throttle', 0)) > 0.1:
+                         print(f"Stale telemetry during gen for {bag_name}. Regenerating.")
+                         telemetry = []
+                         break
+            
+            if not telemetry:
+                 # Regenerate
+                 raw_bag_path = os.path.join(BAG_DIR, bag_name)
+                 if os.path.exists(raw_bag_path):
+                      telemetry = extract_telemetry(raw_bag_path)
+                 else:
+                      print(f"Telemetry not found and raw bag missing for {bag_name}")
+                      continue
                 
             # Sort telemetry by time
             telemetry.sort(key=lambda x: x['time'])
