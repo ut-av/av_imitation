@@ -218,6 +218,11 @@ createApp({
         const currentVizBag = ref(null);
         const currentSampleIndex = ref(0);
 
+        // Analysis State
+        const selectedAnalysisDataset = ref(null);
+        const velocityChart = ref(null);
+        const curvatureChart = ref(null);
+
         const timeline = ref(null);
         const timelineScrollContainer = ref(null);
         const timelineContent = ref(null);
@@ -1705,7 +1710,7 @@ createApp({
         };
 
         watch(currentStep, (newStep) => {
-            if (newStep === 3 || newStep === 2) { // Fetch datasets for duplicate checking in step 2 as well
+            if (newStep === 3 || newStep === 2 || newStep === 4) { // Fetch datasets for step 2, 3, and 4
                 fetchDatasets();
             }
         });
@@ -1862,6 +1867,110 @@ createApp({
                 formattedDuration: new Date(totalDuration * 1000).toISOString().substr(11, 8) // HH:MM:SS
             };
         });
+
+        // Analysis Logic
+        const selectAnalysisDataset = async (ds) => {
+            const name = ds.dataset_name || ds;
+            selectedAnalysisDataset.value = name;
+
+            try {
+                const res = await fetch(`/api/dataset/${name}/stats`);
+                const stats = await res.json();
+
+                if (stats.error) {
+                    console.error("Error fetching stats:", stats.error);
+                    return;
+                }
+
+                nextTick(() => {
+                    renderCharts(stats);
+                });
+
+            } catch (e) {
+                console.error("Failed to load dataset stats", e);
+            }
+        };
+
+        const renderCharts = (stats) => {
+            if (velocityChart.value) velocityChart.value.destroy();
+            if (curvatureChart.value) curvatureChart.value.destroy();
+
+            const createHistogramData = (data, bins = 50, fixedMin = null, fixedMax = null) => {
+                let min = fixedMin !== null ? fixedMin : Infinity;
+                let max = fixedMax !== null ? fixedMax : -Infinity;
+
+                if (fixedMin === null || fixedMax === null) {
+                    // Avoid spread syntax for large arrays to prevent stack overflow
+                    for (let i = 0; i < data.length; i++) {
+                        if (data[i] < min) min = data[i];
+                        if (data[i] > max) max = data[i];
+                    }
+                }
+
+                if (min === Infinity) { min = 0; max = 1; }
+                if (min === max) { max = min + 1; }
+
+                const step = (max - min) / bins;
+                const histogram = new Array(bins).fill(0);
+                const labels = new Array(bins).fill(0).map((_, i) => (min + i * step).toFixed(2));
+
+                data.forEach(val => {
+                    const bin = Math.min(Math.floor((val - min) / step), bins - 1);
+                    if (bin >= 0 && bin < bins) {
+                        histogram[bin]++;
+                    }
+                });
+
+                return { labels, histogram };
+            };
+
+            const velData = createHistogramData(stats.velocities, 50, -0.1, 2.1);
+            const curData = createHistogramData(stats.curvatures, 50, -1.1, 1.1);
+
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: { beginAtZero: true, grid: { color: '#333' } },
+                    x: { grid: { color: '#333' } }
+                }
+            };
+
+            const ctxVel = document.getElementById('velocityChart').getContext('2d');
+            velocityChart.value = new Chart(ctxVel, {
+                type: 'bar',
+                data: {
+                    labels: velData.labels,
+                    datasets: [{
+                        label: 'Velocity',
+                        data: velData.histogram,
+                        backgroundColor: '#bb86fc',
+                        borderColor: '#bb86fc',
+                        borderWidth: 1
+                    }]
+                },
+                options: commonOptions
+            });
+
+            const ctxCur = document.getElementById('curvatureChart').getContext('2d');
+            curvatureChart.value = new Chart(ctxCur, {
+                type: 'bar',
+                data: {
+                    labels: curData.labels,
+                    datasets: [{
+                        label: 'Curvature',
+                        data: curData.histogram,
+                        backgroundColor: '#03dac6',
+                        borderColor: '#03dac6',
+                        borderWidth: 1
+                    }]
+                },
+                options: commonOptions
+            });
+        };
 
         return {
             bags,
@@ -2046,7 +2155,10 @@ createApp({
             deleteDataset,
             currentLoadedDataset,
             resetDatasetForm,
-            loadDatasetConfig
+            loadDatasetConfig,
+            // Analysis
+            selectedAnalysisDataset,
+            selectAnalysisDataset
         };
     }
 }).mount('#app');

@@ -601,6 +601,96 @@ def add_tags():
             
     return jsonify(current_tags)
 
+@app.route('/api/dataset/<dataset_name>/stats')
+def get_dataset_stats(dataset_name):
+    dataset_path = os.path.join(DATASETS_DIR, f"{dataset_name}.json")
+    if not os.path.exists(dataset_path):
+        return jsonify({"error": "Dataset not found"}), 404
+        
+    try:
+        with open(dataset_path, 'r') as f:
+            data = json.load(f)
+            
+        velocities = []
+        curvatures = []
+        
+        # sample some points if too many? No, 50k points is fine for modern browsers/backends
+        for s in data.get('samples', []):
+            for action in s.get('future_actions', []):
+                curvatures.append(action[0])
+                velocities.append(action[1])
+                
+        return jsonify({
+            "velocities": velocities,
+            "curvatures": curvatures,
+            "count": len(velocities)
+        })
+    except Exception as e:
+        print(f"Error reading stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/dataset/<dataset_name>/samples')
+def get_dataset_samples(dataset_name):
+    """
+    Returns a simplified list of samples for timeline visualization.
+    Pagination might be needed for huge datasets, but let's try sending all first.
+    If it's too big (>10MB), we should slice. 
+    47k samples * ~200 bytes = ~9MB. It's borderline but acceptable for a local tool.
+    To be safe, let's limit to 1000 evenly spaced samples for the initial timeline view?
+    The user asked for a timeline like the bag visualization. Bag viz uses *telemetry* which is lighter.
+    Here we want to show *images*. We can't send 47k images.
+    We send metadata, and frontend lazy loads images.
+    """
+    dataset_path = os.path.join(DATASETS_DIR, f"{dataset_name}.json")
+    if not os.path.exists(dataset_path):
+        return jsonify({"error": "Dataset not found"}), 404
+        
+    try:
+        with open(dataset_path, 'r') as f:
+            data = json.load(f)
+            
+        samples = []
+        raw_samples = data.get('samples', [])
+        
+        # We return ALL samples so user can scroll through them.
+        # But we strip heavy data like 'history_images' list to save BW.
+        for i, s in enumerate(raw_samples):
+            # Check if we have actions
+            v, c = 0, 0
+            if s.get('future_actions'):
+                c, v = s['future_actions'][0] # Take immediate action
+                
+            samples.append({
+                "index": i,
+                "timestamp": s.get('timestamp'),
+                "image": s.get('current_image'), # Relative path
+                "velocity": v,
+                "curvature": c
+            })
+                
+        return jsonify(samples)
+    except Exception as e:
+        print(f"Error reading samples: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/dataset_image/<path:image_path>')
+def get_dataset_image(image_path):
+    # Image path is relative to rosbag_processed root usually, or absolute?
+    # In dataset.json: "current_image": "gray/bagname/images/timestamp.jpg"
+    # This is relative to PROCESSED_DIR usually? 
+    # analyze_dataset.py had logic to fix paths.
+    
+    # Try relative to PROCESSED_DIR
+    full_path = os.path.join(PROCESSED_DIR, image_path)
+    if os.path.exists(full_path):
+         return send_file(full_path)
+         
+    # Try absolute if it looks like one (security risk if exposed, but this is a local tool)
+    if os.path.isabs(image_path) and os.path.exists(image_path):
+        return send_file(image_path)
+        
+    return "Image not found", 404
+
 # Global state for processing jobs
 # Key: bag_name, Value: { "status": "running"|"done"|"error"|"cancelled", "progress": 0, "total": 0, "current": 0, "cancel_flag": False }
 processing_jobs = {}

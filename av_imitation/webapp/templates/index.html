@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AV Imitation Data Annotator</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* Reset and Base Styles */
         *,
@@ -724,6 +725,7 @@
                 <button :class="{ active: currentStep === 1 }" @click="currentStep = 1">1. Bags</button>
                 <button :class="{ active: currentStep === 2 }" @click="currentStep = 2">2. Dataset</button>
                 <button :class="{ active: currentStep === 3 }" @click="currentStep = 3">3. Visualize</button>
+                <button :class="{ active: currentStep === 4 }" @click="currentStep = 4">4. Analysis</button>
             </nav>
 
             <button class="hamburger-btn" @click="showSettings = true">☰</button>
@@ -1386,6 +1388,37 @@
                     </div>
                 </div> <!-- end step-container -->
             </div> <!-- end visualize tab -->
+            <!-- Step 4: Analysis -->
+            <div class="step-container" v-show="currentStep === 4">
+                <div class="sidebar">
+                    <h3>Datasets</h3>
+                    <div v-if="loadingDatasets" class="loading">Loading...</div>
+                    <ul class="bag-list">
+                        <li v-for="ds in datasets" :key="ds.dataset_name || ds" class="bag-item" :class="{ active: selectedAnalysisDataset === (ds.dataset_name || ds) }" @click="selectAnalysisDataset(ds)">
+                            <div class="bag-info">
+                                <div class="bag-name-full">[[ ds.dataset_name || ds ]]</div>
+                                <div class="bag-duration" v-if="ds.samples_count">[[ ds.samples_count ]] samples</div>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+                <div class="editor" style="flex-direction: column; gap: 2rem;">
+                    <div v-if="!selectedAnalysisDataset" class="loading" style="margin-top: 2rem; text-align: center;">
+                        Select a dataset to view analysis
+                    </div>
+                    <div v-else style="display: flex; flex-direction: column; gap: 2rem; height: 100%;">
+                        <div style="flex: 1; min-height: 0; position: relative;">
+                            <h3>Velocity Distribution</h3>
+                            <canvas id="velocityChart"></canvas>
+                        </div>
+                        <div style="flex: 1; min-height: 0; position: relative;">
+                            <h3>Curvature Distribution</h3>
+                            <canvas id="curvatureChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </main>
 
         <!-- Settings Panel -->
@@ -1417,6 +1450,7 @@
                 </button>
             </div>
         </div>
+
     </div>
     <script src="/static/js/main.js"></script>
 </body>
