@@ -14,6 +14,23 @@ import io
 import re
 import math
 from ament_index_python.packages import get_package_share_directory
+import sys
+import subprocess
+import yaml
+import torch
+import onnxruntime as ort
+from torch.utils.data import DataLoader
+# Add src to path to import local modules
+sys.path.append(os.path.join(os.path.dirname(__file__), '../src'))
+# Ensure dataloader and models can be imported - assume they are in ../src
+# We need to make sure the relative path is correct. 
+# app.py is in .../webapp/app.py. ../src is .../webapp/../src = .../src.
+# In src/, we have dataloader.py and models.py.
+# So this append should work if executed from app.py.
+
+from dataloader import get_dataloader, AVDataset
+from models import CNN, MLP, Transformer
+
 
 import threading
 import uuid
@@ -93,6 +110,7 @@ def list_bags():
                 if bag_data["duration"] == 0 or "start_time" not in bag_data:
                     try:
                         import yaml
+
                         meta_yaml_path = os.path.join(path, "metadata.yaml")
                         if os.path.exists(meta_yaml_path):
                             with open(meta_yaml_path, 'r') as f:
@@ -1201,6 +1219,233 @@ def serve_processed_file(filepath):
         return "File not found", 404
         
     return send_file(full_path)
+
+@app.route('/api/experiments')
+def list_experiments():
+    experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+    if not os.path.exists(experiments_dir):
+        return jsonify([])
+    experiments = [d for d in os.listdir(experiments_dir) if os.path.isdir(os.path.join(experiments_dir, d))]
+    # Sort by date (newest first)
+    experiments.sort(reverse=True)
+    
+    experiment_data = []
+    for exp in experiments:
+        exp_path = os.path.join(experiments_dir, exp)
+        models_path = os.path.join(exp_path, 'models')
+        has_onnx = os.path.exists(os.path.join(models_path, 'best_model.onnx'))
+        training_meta_path = os.path.join(models_path, 'training_metadata.json')
+        
+        meta = {}
+        if os.path.exists(training_meta_path):
+            try:
+                with open(training_meta_path, 'r') as f:
+                    meta = json.load(f)
+            except:
+                pass
+                
+        experiment_data.append({
+            'name': exp,
+            'has_onnx': has_onnx,
+            'metadata': meta
+        })
+        
+    return jsonify(experiment_data)
+
+@app.route('/api/convert_onnx', methods=['POST'])
+def convert_to_onnx():
+    data = request.json
+    experiment_name = data.get('experiment_name')
+    
+    if not experiment_name:
+        return jsonify({'error': 'Experiment name required'}), 400
+        
+    script_path = os.path.expanduser('~/roboracer_ws/src/av_imitation/av_imitation/src/export_onnx.py')
+    
+    try:
+        # Run export_onnx.py script
+        cmd = [sys.executable, script_path, '--experiment', experiment_name]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return jsonify({'error': f'Conversion failed: {result.stderr}'}), 500
+            
+        return jsonify({'success': True, 'output': result.stdout})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/inference', methods=['POST'])
+def run_inference():
+    data = request.json
+    experiment_name = data.get('experiment_name')
+    dataset_name = data.get('dataset_name')
+    split = data.get('split', 'val')
+    
+    if not experiment_name or not dataset_name:
+        return jsonify({'error': 'Experiment and Dataset names required'}), 400
+        
+    # Paths
+    experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+    exp_path = os.path.join(experiments_dir, experiment_name)
+    models_path = os.path.join(exp_path, 'models')
+    onnx_path = os.path.join(models_path, 'best_model.onnx')
+    pth_path = os.path.join(models_path, 'best_model.pth')
+    training_meta_path = os.path.join(models_path, 'training_metadata.json')
+    
+    dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+    dataset_meta_file = os.path.join(dataset_dir, f"{dataset_name}.json")
+    
+    if not os.path.exists(dataset_meta_file):
+        return jsonify({'error': 'Dataset not found'}), 404
+
+    # Load Training Metadata
+    if not os.path.exists(training_meta_path):
+         return jsonify({'error': 'Training metadata not found'}), 404
+         
+    with open(training_meta_path, 'r') as f:
+        train_meta = json.load(f)
+        
+    # Setup Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Prepare Data Loader
+    # Note: We use the dataloader to get batch-wise data, but we process it to match inference
+    try:
+        # Check if we should use ONNX
+        use_onnx = os.path.exists(onnx_path)
+        
+        # Initialize results containers
+        all_preds = []
+        all_gt = []
+        
+        if use_onnx:
+            print(f"Running Inference using ONNX: {onnx_path}")
+            ort_session = ort.InferenceSession(onnx_path)
+            input_name = ort_session.get_inputs()[0].name
+            
+            # Loader
+            loader = get_dataloader(dataset_meta_file, split=split, batch_size=32, shuffle=False, num_workers=2)
+            
+            for batch in loader:
+                images = batch['image'].numpy() # (B, T, C, H, W)
+                actions = batch['action'].numpy() # (B, T, 2)
+                
+                # Preprocess for ONNX: Flatten T into C -> (B, T*C, H, W)
+                B, T, C, H, W = images.shape
+                images_flat = images.reshape(B, T*C, H, W)
+                
+                # Run Inference
+                ort_inputs = {input_name: images_flat}
+                outputs = ort_session.run(None, ort_inputs)[0] # (B, T_out, 2)
+                
+                # Collect
+                # We are interested in comparison. 
+                # Actions (GT) are (B, T_out, 2). Outputs are (B, T_out, 2).
+                # Flatten batch and time dimensions for histogram?
+                # Actually Analysis tab histograms usually aggregate all samples.
+                # Let's verify what Analysis tab expects. It expects list of curvature/velocity.
+                # For inference, we want matched pairs.
+                
+                # Let's just flatten to list of [k, v]
+                # Outputs might be shorter sequence than inputs?
+                # Usually T_out == T_future.
+                
+                # Just append numpy arrays
+                all_preds.append(outputs)
+                all_gt.append(actions)
+
+        else:
+            print(f"Running Inference using PyTorch: {pth_path}")
+            if not os.path.exists(pth_path):
+                 return jsonify({'error': 'Model file not found'}), 404
+                 
+            # Initialize Model
+            model_type = train_meta.get('model', 'cnn')
+            # Extract architecture params from training metadata if available, else infer/default
+            # main.py infers T and C from data. We need them here.
+            # We can get them from the first batch of dataloader.
+            
+            loader = get_dataloader(dataset_meta_file, split=split, batch_size=32, shuffle=False, num_workers=2)
+            
+            model = None
+            
+            model_initialized = False
+            
+            with torch.no_grad():
+                for batch in loader:
+                    images = batch['image'].to(device) # (B, T, C, H, W)
+                    actions = batch['action'].to(device)
+                    
+                    if not model_initialized:
+                        B, T, C, H, W = images.shape
+                        output_steps = actions.shape[1]
+                        dropout = train_meta.get('dropout', 0.1) # Default
+                        
+                        if model_type == 'cnn':
+                            model = CNN(T * C, output_steps, dropout=dropout)
+                        elif model_type == 'mlp':
+                            model = MLP(T * C, output_steps, dropout=dropout)
+                        elif model_type == 'transformer':
+                            model = Transformer(C, output_steps, dropout=dropout)
+                        else:
+                            return jsonify({'error': f'Unknown model type {model_type}'}), 500
+                            
+                        model.load_state_dict(torch.load(pth_path, map_location=device))
+                        model.to(device)
+                        model.eval()
+                        model_initialized = True
+                        
+                    outputs = model(images)
+                    
+                    all_preds.append(outputs.cpu().numpy())
+                    all_gt.append(actions.cpu().numpy())
+                    
+        # Concatenate results
+        if not all_preds:
+             return jsonify({'error': 'No data in split'}), 400
+             
+        preds_flat = np.concatenate(all_preds, axis=0) # (TotalB, T, 2)
+        gt_flat = np.concatenate(all_gt, axis=0)
+        
+        # Flatten time dimension too for histograms
+        preds_flat_2d = preds_flat.reshape(-1, 2)
+        gt_flat_2d = gt_flat.reshape(-1, 2)
+        
+        # Collect image paths using dataset samples directly
+        # Total samples processed
+        total_samples = gt_flat.shape[0]
+        
+        # Access dataset from loader
+        ds = loader.dataset
+        # samples is list of dicts. We want 'current_image'.
+        # Ensure we don't index out of bounds if loader did something weird, though shuffle=False usually preserves order.
+        image_paths = [s['current_image'] for s in ds.samples[:total_samples]]
+        
+        # Return structured per-sample results for video playback
+        samples_data = []
+        for i in range(total_samples):
+             samples_data.append({
+                 'image': ds.samples[i]['current_image'],
+                 'gt': gt_flat[i].tolist(),    # List of [c, v] for T steps
+                 'pred': preds_flat[i].tolist() # List of [c, v] for T steps
+             })
+        
+        return jsonify({
+            'predictions': {
+                'curvatures': preds_flat_2d[:, 0].tolist(),
+                'velocities': preds_flat_2d[:, 1].tolist()
+            },
+            'ground_truth': {
+                'curvatures': gt_flat_2d[:, 0].tolist(),
+                'velocities': gt_flat_2d[:, 1].tolist()
+            },
+            'samples': samples_data
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 def main():
     rclpy.init()

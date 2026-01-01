@@ -1786,8 +1786,11 @@ createApp({
         };
 
         watch(currentStep, (newStep) => {
-            if (newStep === 3 || newStep === 2 || newStep === 4) { // Fetch datasets for step 2, 3, and 4
+            if (newStep === 3 || newStep === 2 || newStep === 4 || newStep === 5) { // Fetch datasets for step 2, 3, 4, 5
                 fetchDatasets();
+            }
+            if (newStep === 5) {
+                fetchExperiments();
             }
         });
 
@@ -2048,6 +2051,205 @@ createApp({
             });
         };
 
+        // Inference Logic
+        const experiments = ref([]);
+        const selectedExperiment = ref(null);
+        const selectedInferenceDataset = ref(null);
+        const selectedSplit = ref("val");
+        const inferenceResult = ref(null);
+        const isRunningInference = ref(false);
+        const inferenceStatus = ref("");
+        const isConvertingOnnx = ref(false);
+
+        const fetchExperiments = async () => {
+            try {
+                const res = await fetch('/api/experiments');
+                experiments.value = await res.json();
+            } catch (e) {
+                console.error("Failed to fetch experiments", e);
+            }
+        };
+
+        const convertOnnx = async () => {
+            if (!selectedExperiment.value) return;
+            const expName = selectedExperiment.value.name;
+
+            isConvertingOnnx.value = true;
+            inferenceStatus.value = "Converting to ONNX...";
+
+            try {
+                const res = await fetch('/api/convert_onnx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ experiment_name: expName })
+                });
+
+                const data = await res.json();
+                if (data.error) {
+                    alert("Conversion failed: " + data.error);
+                    inferenceStatus.value = "Conversion failed.";
+                } else {
+                    alert("Conversion successful! Please refresh experiments list.");
+                    inferenceStatus.value = "Conversion successful.";
+                    fetchExperiments();
+                }
+            } catch (e) {
+                console.error(e);
+                alert("Conversion failed");
+            } finally {
+                isConvertingOnnx.value = false;
+            }
+        };
+
+        const runInference = async () => {
+            if (!selectedExperiment.value || !selectedInferenceDataset.value) return;
+
+            isRunningInference.value = true;
+            inferenceStatus.value = "Running Inference... (This may take a while)";
+            inferenceResult.value = null;
+
+            try {
+                const res = await fetch('/api/inference', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        experiment_name: selectedExperiment.value.name,
+                        dataset_name: selectedInferenceDataset.value.dataset_name || selectedInferenceDataset.value,
+                        split: selectedSplit.value
+                    })
+                });
+
+                const data = await res.json();
+
+                if (data.error) {
+                    inferenceStatus.value = "Error: " + data.error;
+                } else {
+                    inferenceResult.value = data;
+                    inferenceStatus.value = "Done.";
+                    nextTick(() => {
+                        renderInferenceCharts(data);
+                    });
+                }
+            } catch (e) {
+                console.error(e);
+                inferenceStatus.value = "Failed to run inference.";
+            } finally {
+                isRunningInference.value = false;
+            }
+        };
+
+        const inferenceVelocityChart = ref(null);
+        const inferenceCurvatureChart = ref(null);
+
+        const renderInferenceCharts = (data) => {
+            if (inferenceVelocityChart.value) inferenceVelocityChart.value.destroy();
+            if (inferenceCurvatureChart.value) inferenceCurvatureChart.value.destroy();
+
+            // Helper to create histogram (reused/adapted)
+            const createHistogramData = (data, bins = 50, fixedMin = null, fixedMax = null) => {
+                let min = fixedMin !== null ? fixedMin : Infinity;
+                let max = fixedMax !== null ? fixedMax : -Infinity;
+
+                if (fixedMin === null || fixedMax === null) {
+                    for (let i = 0; i < data.length; i++) {
+                        if (data[i] < min) min = data[i];
+                        if (data[i] > max) max = data[i];
+                    }
+                }
+
+                if (min === Infinity) { min = 0; max = 1; }
+                if (min === max) { max = min + 1; }
+
+                const step = (max - min) / bins;
+                const histogram = new Array(bins).fill(0);
+                const labels = new Array(bins).fill(0).map((_, i) => (min + i * step).toFixed(2));
+
+                data.forEach(val => {
+                    const bin = Math.min(Math.floor((val - min) / step), bins - 1);
+                    if (bin >= 0 && bin < bins) {
+                        histogram[bin]++;
+                    }
+                });
+
+                return { labels, histogram };
+            };
+
+            const gtVelFromData = data.ground_truth.velocities;
+            const predVelFromData = data.predictions.velocities;
+            const gtCurFromData = data.ground_truth.curvatures;
+            const predCurFromData = data.predictions.curvatures;
+
+            // Generate bins based on combined range or fixed range?
+            // Fixed range is safer for comparison
+            const velHistGT = createHistogramData(gtVelFromData, 50, -0.1, 2.1);
+            const velHistPred = createHistogramData(predVelFromData, 50, -0.1, 2.1); // Use same labels/bins
+
+            const curHistGT = createHistogramData(gtCurFromData, 50, -1.1, 1.1);
+            const curHistPred = createHistogramData(predCurFromData, 50, -1.1, 1.1);
+
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: true }
+                },
+                scales: {
+                    y: { beginAtZero: true, grid: { color: '#333' } },
+                    x: { grid: { color: '#333' } }
+                }
+            };
+
+            const ctxVel = document.getElementById('inferenceVelocityChart').getContext('2d');
+            inferenceVelocityChart.value = new Chart(ctxVel, {
+                type: 'bar',
+                data: {
+                    labels: velHistGT.labels,
+                    datasets: [
+                        {
+                            label: 'Ground Truth',
+                            data: velHistGT.histogram,
+                            backgroundColor: 'rgba(187, 134, 252, 0.5)',
+                            borderColor: '#bb86fc',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Prediction',
+                            data: velHistPred.histogram,
+                            backgroundColor: 'rgba(3, 218, 198, 0.5)',
+                            borderColor: '#03dac6',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: commonOptions
+            });
+
+            const ctxCur = document.getElementById('inferenceCurvatureChart').getContext('2d');
+            inferenceCurvatureChart.value = new Chart(ctxCur, {
+                type: 'bar',
+                data: {
+                    labels: curHistGT.labels,
+                    datasets: [
+                        {
+                            label: 'Ground Truth',
+                            data: curHistGT.histogram,
+                            backgroundColor: 'rgba(187, 134, 252, 0.5)',
+                            borderColor: '#bb86fc',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Prediction',
+                            data: curHistPred.histogram,
+                            backgroundColor: 'rgba(3, 218, 198, 0.5)',
+                            borderColor: '#03dac6',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: commonOptions
+            });
+        };
+
         // Visualization Logic (Video)
         const vizCanvas = ref(null);
         const isVizPlaying = ref(false);
@@ -2058,7 +2260,7 @@ createApp({
         let animationFrameId = null;
 
         // Helper to draw curvature overlay
-        const drawCurvature = (ctx, width, height, curvature, velocity) => {
+        const drawCurvature = (ctx, width, height, curvature, velocity, color = "#00ff00") => {
             const cx = width / 2;
             const cy = height - 20;
 
@@ -2070,9 +2272,7 @@ createApp({
             ctx.lineTo(cx, cy - 40);
             ctx.stroke();
 
-            const wheelbase = 0.324; // Standard wheelbase
-
-            ctx.strokeStyle = "#00ff00"; // Green
+            ctx.strokeStyle = color;
             ctx.lineWidth = 3;
             ctx.beginPath();
             ctx.moveTo(cx, cy);
@@ -2096,10 +2296,6 @@ createApp({
 
             for (let t = 0; t < horizon; t += dt) {
                 // Kinematics from vesc_driver.cpp updateOdometry
-                // del_x = v * dt * cos(theta)
-                // del_y = v * dt * sin(theta)
-                // del_theta = v * k * dt
-
                 const dist = sim_v * dt;
                 const del_x = dist * Math.cos(sim_theta);
                 const del_y = dist * Math.sin(sim_theta);
@@ -2108,22 +2304,6 @@ createApp({
                 sim_x += del_x;
                 sim_y += del_y;
                 sim_theta += del_theta;
-
-                // Project to Canvas (Top-down approximation)
-                // Canvas X = cx - sim_x * scale (Note: Inverted X for Left Turn = Left Draw)
-                // Wait, simulation: theta=PI/2 (Up).
-                // Left Turn (Positive Curvature) -> theta increases (+) -> turns Left (towards PI).
-                // cos(PI) = -1. So x becomes negative.
-                // We want Left Turn to be drawn Left (Canvas X < cx).
-                // So Canvas X = cx + sim_x * scale.
-                // Let's trace:
-                // Start: x=0, y=0, th=PI/2.
-                // Step 1: k>0. th increases to PI/2 + e. (Quadrant 2).
-                // cos(Q2) is Negative. sin(Q2) is Positive.
-                // dx is Neg, dy is Pos.
-                // x becomes Neg. y becomes Pos.
-                // Canvas X = cx + x (Neg) -> Left. Correct.
-                // Canvas Y = cy - y (Pos) -> Up. Correct.
 
                 ctx.lineTo(cx + sim_x * scale, cy - sim_y * scale);
             }
@@ -2255,19 +2435,156 @@ createApp({
                     // Trigger a redraw if we have a sample
                     if (currentSample.value && !isVizPlaying.value) {
                         // Force update to draw static frame
-                        const temp = currentSample.value;
-                        // Just relying on the currentSample watcher might not work if it doesn't change
-                        // So let's manually trigger the watcher logic or copied logic.
-                        // The active watcher on currentSample should fire if we just accessed it? No.
-                        // Let's just manually draw.
-                        // Actually, the above watcher logic is fine if we can invoke it.
-                        // But for simplicity, the user will probably click a bag or sample soon.
+                        const canvas = vizCanvas.value;
+                        if (canvas) {
+                            const ctx = canvas.getContext('2d');
+                            const img = new Image();
+                            img.src = `/api/processed_file/${currentSample.value.current_image}`;
+                            img.onload = () => {
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                if (currentSample.value.future_actions && currentSample.value.future_actions.length > 0) {
+                                    const [c, v] = currentSample.value.future_actions[0];
+                                    drawCurvature(ctx, canvas.width, canvas.height, c, v);
+                                    currentVizVelocity.value = v;
+                                    currentVizCurvature.value = c;
+                                }
+                            };
+                        }
                     }
                 });
-            } else {
-                isVizPlaying.value = false; // Stop if leaving tab
             }
         });
+
+        // Video Logic for Inference
+        const inferenceCanvas = ref(null);
+        const isInferencePlaying = ref(false);
+        const currentInferenceIndex = ref(0);
+        const currentInferenceGT = ref(null);
+        const currentInferencePred = ref(null);
+
+        const playInferenceVideo = async () => {
+            if (!inferenceResult.value) return;
+
+            // Ensure canvas ref
+            const canvas = document.getElementById('inferenceCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+
+            isInferencePlaying.value = true;
+
+            const samples = inferenceResult.value.samples;
+
+            while (isInferencePlaying.value && currentInferenceIndex.value < samples.length) {
+                const s = samples[currentInferenceIndex.value];
+                const src = `/api/processed_file/${s.image}`;
+
+                try {
+                    const img = await loadImage(src);
+                    if (!isInferencePlaying.value) break;
+
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                    // Draw GT (Green/Purple)
+                    // Format: [c, v]
+                    // Taking first step? Or assume instant?
+                    const gt = s.gt || [0, 0];
+                    const pred = s.pred || [0, 0];
+
+                    // If arrays (sequence), take first?
+                    // app.py flattens to [Batch*Time, 2] for charts, but for samples we passed full lists.
+                    // But app.py logic:
+                    // gt_flat[i].tolist() -> It's a single step if T=1, or a sequence?
+                    // gt_flat was size (TotalB, T, 2) flattened to (TotalB, 2) ONLY IF T is handled.
+                    // Wait, in app.py:
+                    // preds_flat = np.concatenate(all_preds, axis=0) # (TotalB, T, 2)
+                    // gt_flat[i] would be (T, 2).
+                    // So s.gt is a list of [c, v]. We take the first one for visualization?
+                    // Usually we visualize the first future step or the immediate command.
+
+                    const gt_val = Array.isArray(gt[0]) ? gt[0] : gt;
+                    const pred_val = Array.isArray(pred[0]) ? pred[0] : pred;
+
+                    const gt_c = gt_val[0];
+                    const gt_v = gt_val[1];
+
+                    const pred_c = pred_val[0];
+                    const pred_v = pred_val[1];
+
+                    // Update current values for UI
+                    currentInferenceGT.value = { c: gt_c, v: gt_v };
+                    currentInferencePred.value = { c: pred_c, v: pred_v };
+
+                    // Draw GT (Purple/Pink to match chart)
+                    drawCurvature(ctx, canvas.width, canvas.height, gt_c, gt_v, "#bb86fc");
+
+                    // Draw Pred (Teal to match chart)
+                    drawCurvature(ctx, canvas.width, canvas.height, pred_c, pred_v, "#03dac6");
+
+                    if (currentInferenceIndex.value < samples.length - 1) {
+                        currentInferenceIndex.value++;
+                    } else {
+                        isInferencePlaying.value = false;
+                    }
+
+                    await new Promise(r => setTimeout(r, 66));
+
+                } catch (e) {
+                    console.error("Playback error", e);
+                    isInferencePlaying.value = false;
+                    break;
+                }
+            }
+        };
+
+        const toggleInferencePlay = () => {
+            if (isInferencePlaying.value) {
+                isInferencePlaying.value = false;
+            } else {
+                if (currentInferenceIndex.value >= inferenceResult.value.samples.length - 1) {
+                    currentInferenceIndex.value = 0;
+                }
+                playInferenceVideo();
+            }
+        };
+
+        const setInferenceIndex = (val) => {
+            currentInferenceIndex.value = parseInt(val);
+            if (!isInferencePlaying.value) {
+                drawInferenceStatic();
+            }
+        };
+
+        const drawInferenceStatic = async () => {
+            const canvas = document.getElementById('inferenceCanvas');
+            if (!canvas || !inferenceResult.value) return;
+            const ctx = canvas.getContext('2d');
+
+            const s = inferenceResult.value.samples[currentInferenceIndex.value];
+            const src = `/api/processed_file/${s.image}`;
+            const img = await loadImage(src);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            const gt = s.gt || [0, 0];
+            const pred = s.pred || [0, 0];
+            const gt_val = Array.isArray(gt[0]) ? gt[0] : gt;
+            const pred_val = Array.isArray(pred[0]) ? pred[0] : pred;
+
+            currentInferenceGT.value = { c: gt_val[0], v: gt_val[1] };
+            currentInferencePred.value = { c: pred_val[0], v: pred_val[1] };
+
+            drawCurvature(ctx, canvas.width, canvas.height, gt_val[0], gt_val[1], "#bb86fc");
+            drawCurvature(ctx, canvas.width, canvas.height, pred_val[0], pred_val[1], "#03dac6");
+        };
+
+        watch(inferenceResult, (val) => {
+            if (val && val.samples) {
+                currentInferenceIndex.value = 0;
+                nextTick(() => {
+                    drawInferenceStatic();
+                });
+            }
+        });
+
 
         return {
             bags,
@@ -2461,6 +2778,27 @@ createApp({
             // Analysis
             selectedAnalysisDataset,
             selectAnalysisDataset,
+            // Inference
+            experiments,
+            selectedExperiment,
+            selectedInferenceDataset,
+            selectedSplit,
+            inferenceResult,
+            isRunningInference,
+            inferenceStatus,
+            isConvertingOnnx,
+            fetchExperiments,
+            convertOnnx,
+            runInference,
+            inferenceVelocityChart,
+            inferenceCurvatureChart,
+            toggleInferencePlay,
+            playInferenceVideo,
+            isInferencePlaying,
+            currentInferenceIndex,
+            setInferenceIndex,
+            currentInferenceGT,
+            currentInferencePred,
             // Video Viz
             vizCanvas,
             isVizPlaying,

@@ -726,6 +726,7 @@
                 <button :class="{ active: currentStep === 2 }" @click="currentStep = 2">2. Dataset</button>
                 <button :class="{ active: currentStep === 3 }" @click="currentStep = 3">3. Visualize</button>
                 <button :class="{ active: currentStep === 4 }" @click="currentStep = 4">4. Analysis</button>
+                <button :class="{ active: currentStep === 5 }" @click="currentStep = 5">5. Inference</button>
             </nav>
 
             <button class="hamburger-btn" @click="showSettings = true">☰</button>
@@ -1414,6 +1415,134 @@
                         <div style="flex: 1; min-height: 0; position: relative;">
                             <h3>Curvature Distribution</h3>
                             <canvas id="curvatureChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 5: Inference -->
+            <div class="step-container" v-show="currentStep === 5">
+                <div class="sidebar">
+                    <h3>Experiments</h3>
+                    <div v-if="experiments.length === 0" style="padding: 1rem; color: #aaa;">No experiments found</div>
+                    <ul class="bag-list">
+                        <li v-for="exp in experiments" :key="exp.name" class="bag-item" :class="{ active: selectedExperiment && selectedExperiment.name === exp.name }" @click="selectedExperiment = exp">
+                            <div class="bag-info">
+                                <div class="bag-name-full">[[ exp.name ]]</div>
+                                <div style="font-size: 0.75rem; color: #888; margin-top: 0.2rem;">
+                                    <span v-if="exp.has_onnx" style="color: #03dac6;">ONNX Available</span>
+                                    <span v-else style="color: #ffb74d;">PyTorch Only</span>
+                                </div>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="editor" style="display: flex; flex-direction: column; height: 100%;">
+                    <div v-if="!selectedExperiment" class="loading" style="margin-top: 2rem; text-align: center;">
+                        Select an experiment to run inference
+                    </div>
+
+                    <div v-else style="display: flex; flex-direction: column; gap: 1rem; height: 100%; padding: 1rem;">
+                        <!-- Controls -->
+                        <div style="background: #2c2c2c; padding: 1rem; border-radius: 4px; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+
+                            <!-- Model Actions -->
+                            <div style="display: flex; gap: 1rem; align-items: center; border-right: 1px solid #444; padding-right: 1rem;">
+                                <div>
+                                    <div style="font-size: 0.8rem; color: #aaa;">Selected Model</div>
+                                    <div style="font-weight: 500;">[[ selectedExperiment.name ]]</div>
+                                </div>
+
+                                <button v-if="!selectedExperiment.has_onnx" @click="convertOnnx" :disabled="isConvertingOnnx" style="padding: 0.5rem 1rem; background: #03dac6; color: #000; font-weight: bold;">
+                                    [[ isConvertingOnnx ? 'Converting...' : 'Convert to ONNX' ]]
+                                </button>
+                            </div>
+
+                            <!-- Dataset Selection -->
+                            <div style="display: flex; gap: 1rem; align-items: center;">
+                                <div>
+                                    <label style="display: block; font-size: 0.8rem; color: #aaa; margin-bottom: 0.2rem;">Dataset</label>
+                                    <select v-model="selectedInferenceDataset" style="background: #1e1e1e; border: 1px solid #444; color: #e0e0e0; padding: 0.5rem; border-radius: 4px; min-width: 200px;">
+                                        <option :value="null" disabled>Select Dataset</option>
+                                        <option v-for="ds in datasets" :key="ds.dataset_name || ds" :value="ds">
+                                            [[ ds.dataset_name || ds ]]
+                                        </option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label style="display: block; font-size: 0.8rem; color: #aaa; margin-bottom: 0.2rem;">Split</label>
+                                    <select v-model="selectedSplit" style="background: #1e1e1e; border: 1px solid #444; color: #e0e0e0; padding: 0.5rem; border-radius: 4px;">
+                                        <option value="train">Train</option>
+                                        <option value="val">Validation</option>
+                                        <option value="test">Test</option>
+                                    </select>
+                                </div>
+
+                                <button @click="runInference" :disabled="!selectedInferenceDataset || isRunningInference" style="padding: 0.75rem 1.5rem; font-size: 1rem; background: var(--primary-color); color: white; border: none; border-radius: 4px; font-weight: 500; cursor: pointer;">
+                                    [[ isRunningInference ? 'Running...' : 'Run Inference' ]]
+                                </button>
+                            </div>
+
+                            <div v-if="inferenceStatus" style="margin-left: auto; color: #aaa; font-style: italic;">
+                                [[ inferenceStatus ]]
+                            </div>
+                        </div>
+
+                        <!-- Visualization -->
+                        <div v-if="inferenceResult" style="flex: 1; display: flex; flex-direction: column; gap: 1rem; min-height: 0; overflow-y: auto;">
+
+                            <!-- Charts Row -->
+                            <div style="display: flex; gap: 1rem; height: 300px; flex-shrink: 0;">
+                                <div style="flex: 1; min-height: 0; position: relative; background: #1e1e1e; padding: 1rem; border-radius: 4px;">
+                                    <h3 style="margin-top: 0; font-size: 1rem;">Velocity Distribution (GT vs Pred)</h3>
+                                    <canvas id="inferenceVelocityChart"></canvas>
+                                </div>
+                                <div style="flex: 1; min-height: 0; position: relative; background: #1e1e1e; padding: 1rem; border-radius: 4px;">
+                                    <h3 style="margin-top: 0; font-size: 1rem;">Curvature Distribution (GT vs Pred)</h3>
+                                    <canvas id="inferenceCurvatureChart"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- Video Player -->
+                            <div style="background: #1e1e1e; padding: 1rem; border-radius: 4px; flex: 1; display: flex; flex-direction: column; min-height: 400px;">
+                                <h3 style="margin-top: 0; font-size: 1rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;">
+                                    <span>Inference Playback</span>
+                                    <div v-if="currentInferenceGT && currentInferencePred" style="font-size: 0.9rem; font-weight: normal;">
+                                        <span style="color: #bb86fc; margin-right: 1rem;">GT: v=[[ currentInferenceGT.v.toFixed(2) ]] c=[[ currentInferenceGT.c.toFixed(2) ]]</span>
+                                        <span style="color: #03dac6;">Pred: v=[[ currentInferencePred.v.toFixed(2) ]] c=[[ currentInferencePred.c.toFixed(2) ]]</span>
+                                    </div>
+                                </h3>
+
+                                <div style="flex: 1; position: relative; display: flex; justify-content: center; background: #000; border-radius: 4px; overflow: hidden;">
+                                    <canvas id="inferenceCanvas" width="640" height="480" style="max-width: 100%; max-height: 100%; object-fit: contain;"></canvas>
+
+                                    <!-- Play Overlay -->
+                                    <div v-if="!isInferencePlaying" @click="toggleInferencePlay" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                                                background: rgba(0,0,0,0.5); width: 80px; height: 80px; border-radius: 50%; 
+                                                display: flex; align-items: center; justify-content: center; cursor: pointer; pointer-events: auto;">
+                                        <div style="width: 0; height: 0; border-top: 15px solid transparent; border-bottom: 15px solid transparent; border-left: 25px solid white; margin-left: 5px;"></div>
+                                    </div>
+                                </div>
+
+                                <!-- Controls -->
+                                <div style="margin-top: 1rem; display: flex; gap: 1rem; align-items: center;">
+                                    <button @click="toggleInferencePlay" style="background: none; border: none; color: white; cursor: pointer; font-size: 1.2rem;">
+                                        <span v-if="isInferencePlaying">⏸</span>
+                                        <span v-else>▶</span>
+                                    </button>
+
+                                    <input type="range" min="0" :max="inferenceResult.samples.length - 1" :value="currentInferenceIndex" @input="setInferenceIndex($event.target.value)" style="flex: 1;">
+
+                                    <span style="font-family: monospace; font-size: 0.9rem; min-width: 100px; text-align: right;">
+                                        [[ currentInferenceIndex ]] / [[ inferenceResult.samples.length ]]
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div v-else-if="!isRunningInference" style="flex: 1; display: flex; justify-content: center; align-items: center; color: #555;">
+                            Select dataset and run inference to see results
                         </div>
                     </div>
                 </div>
