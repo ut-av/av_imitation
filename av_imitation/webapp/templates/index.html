@@ -735,7 +735,21 @@
             <!-- Step 1: Annotation (Existing UI) -->
             <div class="step-container" v-show="currentStep === 1">
                 <div class="sidebar">
-                    <h3>Bag Files</h3>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <h3 style="margin: 0;">Bag Files</h3>
+                        <button @click="reprocessAll" :disabled="isProcessing" style="padding: 0.2rem 0.5rem; background: #666; color: #fff; border: none; border-radius: 4px; font-size: 0.8rem; cursor: pointer;" title="Reprocess all processed bags with current options">
+                            Reprocess All
+                        </button>
+                    </div>
+                    <div v-if="isBatchProcessing" style="margin-bottom: 1rem; background: #222; padding: 0.5rem; border-radius: 4px;">
+                        <div style="font-size: 0.8rem; margin-bottom: 4px; display: flex; justify-content: space-between;">
+                            <span>Batch Progress</span>
+                            <span>[[ batchCurrent ]]/[[ batchTotal ]]</span>
+                        </div>
+                        <div style="background: #333; height: 8px; border-radius: 4px; overflow: hidden;">
+                            <div :style="{ width: batchProgress + '%', background: '#4caf50', height: '100%' }"></div>
+                        </div>
+                    </div>
                     <div v-if="loadingBags" class="loading">Loading...</div>
                     <ul class="bag-list">
                         <li v-for="bag in bags" :key="bag.name" class="bag-item" :class="{ active: currentBag === bag.name }" @click="selectBag(bag)" :title="bag.description || 'No description'">
@@ -999,6 +1013,7 @@
                             </div>
                             <div style="margin-top: 1rem; display: flex; align-items: center; justify-content: space-between;">
                                 <div style="margin-top: 1rem; display: flex; align-items: center; gap: 1rem;">
+
                                     <button @click="startProcessing" :disabled="!currentBag || isProcessing" style="padding: 0.5rem 1rem; background: var(--primary-color); color: #000; border: none; border-radius: 4px; font-weight: 600; cursor: pointer;">
                                         [[ isProcessing ? 'Processing...' : 'Start Processing' ]]
                                     </button>

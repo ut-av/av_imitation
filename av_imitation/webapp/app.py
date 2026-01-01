@@ -856,6 +856,15 @@ def run_processing(bag_name, bag_path, output_dir, options):
             print(f"Error processing frame: {e}")
             
     print(f"Finished processing {count} frames")
+    
+    # Force update mtime of the directory so "Processed on" updates
+    try:
+        images_dir = os.path.join(output_dir, "images")
+        if os.path.exists(images_dir):
+             os.utime(images_dir, None)
+    except:
+        pass
+        
     processing_jobs[bag_name]['status'] = "done"
     processing_jobs[bag_name]['progress'] = 100
 

@@ -1265,26 +1265,38 @@ createApp({
             }
         };
 
-        const startProcessing = async () => {
-            if (!currentBag.value) return;
+        const fetchProcessedBags = async () => {
+            loadingProcessedBags.value = true;
+            try {
+                const res = await fetch('/api/processed_bags');
+                processedBags.value = await res.json();
+            } catch (e) {
+                console.error("Failed to load processed bags", e);
+            } finally {
+                loadingProcessedBags.value = false;
+            }
+        };
 
-            if (existingProcessing.value) {
+        const startProcessing = async (targetBagOverride = null, skipConfirm = false) => {
+            const targetBag = targetBagOverride || currentBag.value;
+            if (!targetBag) return;
+
+            if (!skipConfirm && existingProcessing.value && targetBag === currentBag.value) {
                 if (!confirm("Processing output already exists for these options. Overwrite?")) {
                     return;
                 }
             }
 
             isProcessing.value = true;
-            processingStatus.value = "Starting processing...";
+            processingStatus.value = `Starting processing for ${targetBag}...`;
             processingProgress.value = 0;
-            processingBag.value = currentBag.value; // Keep track of which bag is processing
+            processingBag.value = targetBag;
 
             const payload = {
-                bag_name: currentBag.value,
+                bag_name: targetBag,
                 options: {
                     channels: options.value.channels,
                     canny: options.value.canny,
-
                     depth: options.value.depth
                 }
             };
@@ -1304,17 +1316,91 @@ createApp({
                 if (data.error) {
                     processingStatus.value = "Error: " + data.error;
                     isProcessing.value = false;
+                    return false; // Return failure
                 } else {
                     processingStatus.value = `Processing started...`;
                     // Start polling
                     if (processingPollInterval) clearInterval(processingPollInterval);
+
+                    // We need a promise to wait for completion if we are batch processing
+                    // But the poll function is purely side-effect based.
+                    // Let's rely on the poll status or return a promise?
+                    // For batch processing, we can just wait until isProcessing becomes false?
+                    // But pollProcessingStatus clears interval.
                     processingPollInterval = setInterval(pollProcessingStatus, 1000);
+                    return true;
                 }
             } catch (e) {
                 console.error("Processing error", e);
                 processingStatus.value = "Error starting processing.";
                 isProcessing.value = false;
+                return false;
             }
+        };
+
+
+
+        const isBatchProcessing = ref(false);
+        const batchProgress = ref(0);
+        const batchTotal = ref(0);
+        const batchCurrent = ref(0);
+
+        const reprocessAll = async () => {
+            if (isProcessing.value) return;
+
+            await fetchProcessedBags();
+
+            // 1. Get unique bags that have been processed at least once
+            // processedBags.value contains objects like { bag_name: "foo", ... }
+            // We want the original bag names.
+            const uniqueBags = new Set(processedBags.value.map(pb => pb.bag_name));
+
+            // Filter to ensure the bag actually exists in the current bags list
+            const availableBagNames = new Set(bags.value.map(b => b.name));
+            const bagsList = Array.from(uniqueBags).filter(name => availableBagNames.has(name));
+
+            console.log("Found processed bags for reprocessing (filtered by availability):", bagsList);
+
+            if (bagsList.length === 0) {
+                alert("No available processed bags found to reprocess.");
+                return;
+            }
+
+            if (!confirm(`This will reprocess ${bagsList.length} bags that have been previously processed with the CURRENT options selected on the left. This may take a long time. Continue?`)) return;
+
+            console.log("Batch Reprocessing starting for:", bagsList);
+
+            console.log("Batch Reprocessing:", bagsList);
+
+            isBatchProcessing.value = true;
+            batchTotal.value = bagsList.length;
+            batchCurrent.value = 0;
+            batchProgress.value = 0;
+
+            let processedCount = 0;
+            for (const bagName of bagsList) {
+                batchCurrent.value = processedCount + 1;
+                batchProgress.value = (processedCount / batchTotal.value) * 100;
+
+                // Update UI to show what's happening (though startProcessing does this too)
+                processingStatus.value = `Batch: Processing ${bagName} (${processedCount + 1}/${bagsList.length})...`;
+
+                const started = await startProcessing(bagName, true);
+
+                if (started) {
+                    // Wait for it to finish
+                    // We can poll isProcessing
+                    while (isProcessing.value) {
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                }
+                processedCount++;
+            }
+
+
+            batchProgress.value = 100;
+            isBatchProcessing.value = false;
+            alert(`Batch processing complete. Processed ${processedCount} bags.`);
         };
 
 
@@ -1329,17 +1415,7 @@ createApp({
             }
         };
 
-        const fetchProcessedBags = async () => {
-            loadingProcessedBags.value = true;
-            try {
-                const res = await fetch('/api/processed_bags');
-                processedBags.value = await res.json();
-            } catch (e) {
-                console.error("Failed to load processed bags", e);
-            } finally {
-                loadingProcessedBags.value = false;
-            }
-        };
+
 
         // Watch step change to load processed bags
         watch(currentStep, (newStep) => {
@@ -2267,11 +2343,16 @@ createApp({
             processingCurrent,
             existingProcessing,
             startProcessing,
+            reprocessAll,
             cancelProcessing,
             currentBagProcessedList,
             startPreview,
             previewImageUrl,
             previewStatus,
+            isBatchProcessing,
+            batchProgress,
+            batchTotal,
+            batchCurrent,
 
             // Dataset Builder
             processedBags,
