@@ -1274,26 +1274,7 @@
 
             <!-- Step 3: Visualize Results -->
             <div v-show="currentStep === 3" style="display: flex; flex-direction: column; height: 100%;">
-                <!-- Instructions Section -->
-                <div style="background: #2c2c2c; padding: 1.5rem; border-radius: 8px; margin: 1rem; margin-bottom: 0; border-left: 4px solid var(--primary-color); flex-shrink: 0;">
-                    <div style="margin-bottom: 1.5rem;">
-                        <h4 style="font-size: 0.9rem; color: #aaa; margin-bottom: 0.5rem;">Copy dataset from another
-                            computer, run this on the machine you'll use for training:</h4>
-                        <div style="background: #1e1e1e; padding: 0.75rem; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85rem; overflow-x: auto;">
-                            <code style="color: #4ec9b0;">rsync -avz
-                                orin12:roboracer_ws/data/rosbags_processed
-                                ~/roboracer_ws/data/rosbags_processed</code>
-                        </div>
-                    </div>
 
-                    <div>
-                        <h4 style="font-size: 0.9rem; color: #aaa; margin-bottom: 0.5rem;">Training command:</h4>
-                        <div style="background: #1e1e1e; padding: 0.75rem; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85rem; overflow-x: auto;">
-                            <code style="color: #4ec9b0;">python3 src/av_imitation/av_imitation/src/main.py --model cnn
-                                --dataset [[ currentDataset ? currentDataset.dataset_name : '[DATASET NAME]' ]] --epochs 10000 --batch-size 32</code>
-                        </div>
-                    </div>
-                </div>
 
                 <!-- Main Content: Sidebar and Editor side by side -->
                 <div class="step-container" style="flex: 1; display: flex; flex-direction: row; overflow: hidden;">
@@ -1341,6 +1322,19 @@
 
                             <!-- Right: Visualization -->
                             <div style="flex: 1; padding: 1rem; display: flex; flex-direction: column; align-items: center; overflow-y: auto; position: relative;">
+
+                                <!-- Dataset Instructions (Moved) -->
+                                <div style="margin-bottom: 1rem; width: 100%; max-width: 800px; background: #252526; border: 1px solid #3e3e42; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.9rem;">
+                                    <div style="margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 1: Copy Dataset (Run on Training Machine)</div>
+                                    <div style="user-select: all; background: #1e1e1e; padding: 0.5rem; border-radius: 4px; color: #dcdcdc; word-break: break-all; margin-bottom: 1rem;">
+                                        rsync -avz orin12:roboracer_ws/data/rosbags_processed ~/roboracer_ws/data/rosbags_processed
+                                    </div>
+
+                                    <div style="margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 2: Train Model</div>
+                                    <div style="user-select: all; background: #1e1e1e; padding: 0.5rem; border-radius: 4px; color: #dcdcdc; word-break: break-all;">
+                                        python3 src/av_imitation/av_imitation/src/main.py --model cnn --dataset [[ currentDataset ? currentDataset.dataset_name : '[DATASET NAME]' ]] --epochs 10000 --batch-size 32
+                                    </div>
+                                </div>
 
                                 <div v-if="currentSample" style="width: 100%;">
                                     <div style="display: flex; justify-content: center; gap: 1rem; margin-bottom: 1rem;">
@@ -1457,6 +1451,19 @@
                                 <button v-if="!selectedExperiment.has_onnx" @click="convertOnnx" :disabled="isConvertingOnnx" style="padding: 0.5rem 1rem; background: #03dac6; color: #000; font-weight: bold;">
                                     [[ isConvertingOnnx ? 'Converting...' : 'Convert to ONNX' ]]
                                 </button>
+                            </div>
+
+                            <!-- Deployment Instructions -->
+                            <div style="margin-top: 1rem; background: #252526; border: 1px solid #3e3e42; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.9rem;">
+                                <div style="margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 1: Deploy to Car (Run on Host, Replace orinXX with your car's IP address)</div>
+                                <div style="user-select: all; background: #1e1e1e; padding: 0.5rem; border-radius: 4px; color: #dcdcdc; word-break: break-all;">
+                                    rsync -avz ~/roboracer_ws/data/experiments/[[ selectedExperiment.name ]] orin@orinXX:roboracer_ws/data/experiments/[[ selectedExperiment.name ]]
+                                </div>
+
+                                <div style="margin-top: 1rem; margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 2: Run Inference (Run on Car)</div>
+                                <div style="user-select: all; background: #1e1e1e; padding: 0.5rem; border-radius: 4px; color: #dcdcdc; word-break: break-all;">
+                                    ros2 run av_imitation play --experiment-name [[ selectedExperiment.name ]]
+                                </div>
                             </div>
 
                             <!-- Dataset Selection -->
