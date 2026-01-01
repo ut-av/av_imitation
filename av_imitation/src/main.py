@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -274,7 +275,28 @@ def train(args):
             
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, actions)
+            
+            if args.weighted_loss:
+                # Weighted MSE Loss
+                # Weights based on curvature magnitude (index 0)
+                # Ensure actions are normalized before this? Yes they are.
+                # Use raw magnitude or normalized magnitude? Normalized is fine, high absolute value = extreme.
+                # However, normalized values can be negative. We use abs().
+                
+                # Curvature is index 0.
+                curvature = actions[:, :, 0]
+                # Weight = 1 + alpha * |curvature|
+                weights = 1.0 + args.weighted_loss_alpha * torch.abs(curvature)
+                
+                # Calculate raw MSE per element
+                loss_raw = F.mse_loss(outputs, actions, reduction='none') # (B, T, 2)
+                
+                # Apply weights
+                # Weights (B, T) -> (B, T, 1) to broadcast to velocity as well
+                loss = (loss_raw * weights.unsqueeze(-1)).mean()
+            else:
+                loss = criterion(outputs, actions)
+            
             loss.backward()
             optimizer.step()
             
@@ -350,6 +372,9 @@ def train(args):
                 'history_rate': history_rate,
                 'future_rate': future_rate,
                 'dropout': args.dropout,
+                'dropout': args.dropout,
+                'weighted_loss': args.weighted_loss,
+                'weighted_loss_alpha': args.weighted_loss_alpha,
                 'best_val_loss': best_val_loss,
                 'epoch': epoch + 1,
             }
@@ -388,5 +413,10 @@ if __name__ == '__main__':
     parser.add_argument('--no-persistent-workers', dest='persistent_workers', action='store_false')
     parser.set_defaults(persistent_workers=True)
     
+    parser.set_defaults(persistent_workers=True)
+    
+    parser.add_argument('--weighted-loss', action='store_true', help='Apply curvature-based weighting to loss')
+    parser.add_argument('--weighted-loss-alpha', type=float, default=2.0, help='Alpha parameter for weighted loss (weight = 1 + alpha * |curvature|)')
+
     args = parser.parse_args()
     train(args)
