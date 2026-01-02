@@ -2102,6 +2102,9 @@ createApp({
         };
 
         const runInference = async () => {
+            // Stop playback if running
+            isInferencePlaying.value = false;
+
             if (!selectedExperiment.value || !selectedInferenceDataset.value) return;
 
             isRunningInference.value = true;
