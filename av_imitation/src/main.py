@@ -9,7 +9,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from dataloader import get_dataloader
+import numpy as np
+from dataloader import get_dataloader, AVDataset
 from models import CNN, MLP, Transformer
 
 def compute_dataset_stats(dataloader):
@@ -185,7 +186,66 @@ def train(args):
     if train_num_workers == 0:
          print("Warning: num_workers set to 0. Data loading will be on the main process and might be slow.")
     
-    train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs)
+    
+    if args.oversample:
+        print("Oversampling enabled. Calculating weights...")
+        # Create dataset first to access samples
+        train_ds = AVDataset(metadata_file, split='train')
+        
+        # Extract curvatures (index 0 of first future action)
+        # s['future_actions'] is list of [curvature, velocity]
+        curvatures = []
+        for s in train_ds.samples:
+            # Check shape of future_actions
+            # It should be list of lists or numpy array
+            acts = s['future_actions']
+            if len(acts) > 0:
+                curvatures.append(acts[0][0])
+            else:
+                curvatures.append(0.0)
+        
+        curvatures = np.array(curvatures)
+        
+        # Compute histogram to estimate density
+        # Use reasonable bins
+        bins = np.linspace(-2.0, 2.0, 100)
+        hist, bin_edges = np.histogram(curvatures, bins=bins, density=False)
+        
+        # Avoid division by zero
+        hist = hist.astype(float)
+        hist[hist == 0] = 1.0 # Should not happen for populated bins, but if sample falls here, we handle below
+        
+        # Map each sample to a bin index
+        bin_indices = np.digitize(curvatures, bin_edges) - 1
+        bin_indices = np.clip(bin_indices, 0, len(hist) - 1)
+        
+        # Compute current probability (density) for each sample
+        # p(x) ~ count / total
+        current_probs = hist[bin_indices] / len(curvatures)
+        
+        # Compute target probability
+        # q(x) ~ Normal(0, target_std)
+        target_std = args.target_curvature_std
+        target_probs = np.exp(-0.5 * (curvatures / target_std) ** 2) / (target_std * np.sqrt(2 * np.pi))
+        
+        # Weight w = q(x) / p(x)
+        # Normalize weights so they sum to N? Not strictly necessary for sampler, but good for debugging.
+        sample_weights = target_probs / current_probs
+        sample_weights = torch.DoubleTensor(sample_weights)
+        
+        # Create Sampler
+        # num_samples = len(dataset) to keep epoch size same
+        train_sampler = torch.utils.data.WeightedRandomSampler(sample_weights, num_samples=len(train_ds), replacement=True)
+        
+        # Create DataLoader with sampler
+        # shuffle must be False
+        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=False, 
+                                                 sampler=train_sampler, **train_dl_kwargs)
+        
+        print(f"Oversampling initialized. Target Std: {target_std}")
+    else:
+        train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs)
+        
     val_loader = get_dataloader(metadata_file, split='val', batch_size=args.batch_size, shuffle=False, **val_dl_kwargs)
     
     # Inspect one sample to determine input/output shapes (we already have one from temp_loader)
@@ -375,6 +435,8 @@ def train(args):
                 'dropout': args.dropout,
                 'weighted_loss': args.weighted_loss,
                 'weighted_loss_alpha': args.weighted_loss_alpha,
+                'oversample': args.oversample,
+                'target_curvature_std': args.target_curvature_std,
                 'best_val_loss': best_val_loss,
                 'epoch': epoch + 1,
             }
@@ -417,6 +479,9 @@ if __name__ == '__main__':
     
     parser.add_argument('--weighted-loss', action='store_true', help='Apply curvature-based weighting to loss')
     parser.add_argument('--weighted-loss-alpha', type=float, default=2.0, help='Alpha parameter for weighted loss (weight = 1 + alpha * |curvature|)')
+
+    parser.add_argument('--oversample', action='store_true', help='Oversample high-curvature data')
+    parser.add_argument('--target-curvature-std', type=float, default=1.0, help='Target standard deviation for curvature distribution when oversampling')
 
     args = parser.parse_args()
     train(args)
