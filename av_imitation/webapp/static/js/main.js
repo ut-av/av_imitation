@@ -2251,6 +2251,42 @@ createApp({
                 },
                 options: commonOptions
             });
+
+            // If we have target_curvature_std, add a normal distribution line
+            if (data.metadata && data.metadata.target_curvature_std && data.metadata.oversample) {
+                const std = data.metadata.target_curvature_std;
+                // Generate normal dist points matching the bins
+                // curHistGT.labels are the bin centers (or starts? createHistogramData returns starts+step/2 approx? no it returns fixed strings)
+                // Re-calculate numerical labels for plotting
+                const labelsNum = curHistGT.labels.map(l => parseFloat(l));
+
+                // Normal PDF: f(x) = (1 / (std * sqrt(2pi))) * exp(-0.5 * (x/std)^2)
+                // We need to scale this to match the histogram counts. 
+                // Area of histogram = Sum(counts) * bin_width.
+                // Area of PDF = 1.
+                // So PDF_scaled = PDF * Area_hist = PDF * Sum(counts) * bin_width.
+
+                const counts = curHistGT.histogram;
+                const sumCounts = counts.reduce((a, b) => a + b, 0);
+                const binWidth = labelsNum.length > 1 ? (labelsNum[1] - labelsNum[0]) : 1; // Approx
+
+                const normalData = labelsNum.map(x => {
+                    const pdf = (1 / (std * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * Math.pow(x / std, 2));
+                    return pdf * sumCounts * binWidth;
+                });
+
+                // Add dataset
+                inferenceCurvatureChart.value.data.datasets.push({
+                    label: `Target Normal (std=${std.toFixed(2)})`,
+                    data: normalData,
+                    type: 'line',
+                    borderColor: '#ffeb3b', // Yellow
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.4
+                });
+                inferenceCurvatureChart.value.update();
+            }
         };
 
         // Visualization Logic (Video)

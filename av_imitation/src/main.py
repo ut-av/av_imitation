@@ -223,6 +223,24 @@ def train(args):
         # p(x) ~ count / total
         current_probs = hist[bin_indices] / len(curvatures)
         
+        # Calculate target std from data if not explicitly set?
+        # User request: "calculate the stddev based on the training data, rejecting excessive 0 curvature examples"
+        # We'll do this calculation and overwrite args.target_curvature_std or use it if not set?
+        # Let's perform the calculation.
+        epsilon = 0.05
+        non_zero_curvatures = curvatures[np.abs(curvatures) > epsilon]
+        if len(non_zero_curvatures) > 0:
+            calculated_std = np.std(non_zero_curvatures)
+            print(f"Calculated standard deviation of non-zero (> {epsilon}) curvatures: {calculated_std}")
+            
+            # If user provided default 1.0 (which is the argparse default), we override it with calculated?
+            # Or strict flag? User said "calculate it". Suggests we should use calculated one.
+            # Let's use the calculated one unless user provides a specific flag? but argparse has default.
+            # Simple approach: Update args.target_curvature_std to this calculated value.
+            args.target_curvature_std = float(calculated_std)
+        else:
+            print("Warning: No non-zero curvatures found. Using default target std.")
+
         # Compute target probability
         # q(x) ~ Normal(0, target_std)
         target_std = args.target_curvature_std

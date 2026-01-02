@@ -1437,7 +1437,12 @@ def run_inference():
     
     # Get Action Normalization Parameters
     act_mean = train_meta.get('action_mean')
+    act_mean = train_meta.get('action_mean')
     act_std = train_meta.get('action_std')
+    
+    # Get Oversampling Meta
+    target_curvature_std = train_meta.get('target_curvature_std')
+    oversample = train_meta.get('oversample', False)
     
     mean_np = None
     std_np = None
@@ -1616,7 +1621,11 @@ def run_inference():
                 'curvatures': gt_flat_2d[:, 0].tolist(),
                 'velocities': gt_flat_2d[:, 1].tolist()
             },
-            'samples': samples_data
+            'samples': samples_data,
+            'metadata': {
+                'target_curvature_std': target_curvature_std,
+                'oversample': oversample
+            }
         })
 
     except Exception as e:

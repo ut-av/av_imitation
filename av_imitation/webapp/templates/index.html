@@ -1457,7 +1457,7 @@
                             <div style="margin-top: 1rem; background: #252526; border: 1px solid #3e3e42; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.9rem;">
                                 <div style="margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 1: Deploy to Car (Run on Host, Replace orinXX with your car's IP address)</div>
                                 <div style="user-select: all; background: #1e1e1e; padding: 0.5rem; border-radius: 4px; color: #dcdcdc; word-break: break-all;">
-                                    rsync -avz ~/roboracer_ws/data/experiments/[[ selectedExperiment.name ]] orin@orinXX:roboracer_ws/data/experiments/[[ selectedExperiment.name ]]
+                                    rsync -avz ~/roboracer_ws/data/experiments/[[ selectedExperiment.name ]]/ orin@orinXX:roboracer_ws/data/experiments/[[ selectedExperiment.name ]]/
                                 </div>
 
                                 <div style="margin-top: 1rem; margin-bottom: 0.5rem; color: #aaa; font-weight: bold;">Step 2: Run Inference (Run on Car)</div>
