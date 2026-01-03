@@ -437,7 +437,7 @@ def train(args):
              # We report loss to Ray Tune. 
              # Note: logic should handle if not in a session, but ray.train.report checks internally or raises error.
              try:
-                 ray_train.report({"loss": avg_val_loss})
+                 tune.report({"loss": avg_val_loss})
              except RuntimeError:
                  pass # Not inside a tune session
         
