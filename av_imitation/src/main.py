@@ -241,10 +241,6 @@ def train(args):
             calculated_std = np.std(non_zero_curvatures)
             print(f"Calculated standard deviation of non-zero (> {epsilon}) curvatures: {calculated_std}")
             
-            # If user provided default 1.0 (which is the argparse default), we override it with calculated?
-            # Or strict flag? User said "calculate it". Suggests we should use calculated one.
-            # Let's use the calculated one unless user provides a specific flag? but argparse has default.
-            # Simple approach: Update args.target_curvature_std to this calculated value.
             args.target_curvature_std = float(calculated_std)
         else:
             print("Warning: No non-zero curvatures found. Using default target std.")
