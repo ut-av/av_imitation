@@ -6,22 +6,34 @@ import torch
 from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 
 class AVDataset(Dataset):
-    def __init__(self, metadata_file, split='train', transform=None):
+    def __init__(self, metadata_file, split='train', transform=None, data=None):
         """
         metadata_file: Path to the dataset metadata json file.
         split: 'train', 'val', or 'test'.
         transform: Optional transform to be applied on a sample.
+        data: Optional dictionary containing pre-loaded metadata (keys: samples, parameters, root_dir, dataset_name)
         """
         self.transform = transform
         self.split = split
         
-        with open(metadata_file, 'r') as f:
-            meta = json.load(f)
+        if data is not None:
+             # Use pre-loaded data
+             meta = data
+             # Ensure dataset_name is present if we use it for logging (optional)
+             if 'dataset_name' not in meta:
+                  meta['dataset_name'] = "unknown (shared memory)"
+        else:
+            with open(metadata_file, 'r') as f:
+                meta = json.load(f)
         
         # Store parameters directly
         self.parameters = meta.get('parameters', {})
         
-        print(f"Loaded metadata file {metadata_file} for dataset {meta['dataset_name']} with parameters {self.parameters}.")
+        if data is None:
+             print(f"Loaded metadata file {metadata_file} for dataset {meta['dataset_name']} with parameters {self.parameters}.")
+        else:
+             # Reduce logging spam for workers
+             pass
             
         # Handle path mismatch if dataset was generated on another machine
         # We assume the data is located relative to the rosbags_processed directory
@@ -38,7 +50,8 @@ class AVDataset(Dataset):
         if os.path.exists(meta_root_dir):
             self.root_dir = meta_root_dir
         else:
-            print(f"Warning: Metadata root_dir {meta_root_dir} does not exist. Using inferred root {default_root}")
+            if data is None: # Only warn on main process or first load
+                 print(f"Warning: Metadata root_dir {meta_root_dir} does not exist. Using inferred root {default_root}")
             self.root_dir = default_root
         self.samples = self._filter_split(meta['samples'], split)
         
@@ -202,8 +215,8 @@ class AVDataset(Dataset):
         return sample
 
 def get_dataloader(metadata_file, split='train', batch_size=32, shuffle=True, 
-                   num_workers=4, pin_memory=True, prefetch_factor=2, persistent_workers=True):
-    dataset = AVDataset(metadata_file, split=split)
+                   num_workers=4, pin_memory=True, prefetch_factor=2, persistent_workers=True, dataset_data=None):
+    dataset = AVDataset(metadata_file, split=split, data=dataset_data)
     return TorchDataLoader(dataset, batch_size=batch_size, shuffle=shuffle, 
                            num_workers=num_workers, pin_memory=pin_memory, 
                            prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)

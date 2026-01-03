@@ -12,6 +12,9 @@ from tqdm import tqdm
 import numpy as np
 from dataloader import get_dataloader, AVDataset
 from models import CNN, MLP, Transformer
+import ray
+from ray import tune
+from ray import train as ray_train
 
 def compute_dataset_stats(dataloader):
     """
@@ -125,8 +128,12 @@ def train(args):
     
     # 1. Estimate Data Loader Memory Usage
     # Create a temporary loader to fetch one sample
+    # Pass dataset_data if available
+    dataset_data = getattr(args, 'dataset_data', None)
+    
     temp_loader = get_dataloader(metadata_file, split='train', batch_size=1, shuffle=False, 
-                                num_workers=0, pin_memory=False, prefetch_factor=None, persistent_workers=False)
+                                num_workers=0, pin_memory=False, prefetch_factor=None, persistent_workers=False,
+                                dataset_data=dataset_data)
     
     print("Estimating memory usage...")
     sample_batch = next(iter(temp_loader))
@@ -189,8 +196,9 @@ def train(args):
     
     if args.oversample:
         print("Oversampling enabled. Calculating weights...")
+        print("Oversampling enabled. Calculating weights...")
         # Create dataset first to access samples
-        train_ds = AVDataset(metadata_file, split='train')
+        train_ds = AVDataset(metadata_file, split='train', data=dataset_data)
         
         # Extract curvatures (index 0 of first future action)
         # s['future_actions'] is list of [curvature, velocity]
@@ -261,10 +269,11 @@ def train(args):
                                                  sampler=train_sampler, **train_dl_kwargs)
         
         print(f"Oversampling initialized. Target Std: {target_std}")
+        print(f"Oversampling initialized. Target Std: {target_std}")
     else:
-        train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs)
+        train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs, dataset_data=dataset_data)
         
-    val_loader = get_dataloader(metadata_file, split='val', batch_size=args.batch_size, shuffle=False, **val_dl_kwargs)
+    val_loader = get_dataloader(metadata_file, split='val', batch_size=args.batch_size, shuffle=False, **val_dl_kwargs, dataset_data=dataset_data)
     
     # Inspect one sample to determine input/output shapes (we already have one from temp_loader)
     # Re-use sample_batch but we need to check if dimensions match what model expects (B, T, C, H, W)
@@ -413,6 +422,16 @@ def train(args):
         # Logging
         writer.add_scalar('Loss/train', avg_train_loss, epoch)
         writer.add_scalar('Loss/val', avg_val_loss, epoch)
+
+        # Ray Tune Reporting
+        if ray.is_initialized():
+             # We report loss to Ray Tune. 
+             # Note: logic should handle if not in a session, but ray.train.report checks internally or raises error.
+             try:
+                 ray_train.report({"loss": avg_val_loss})
+             except RuntimeError:
+                 pass # Not inside a tune session
+        
         
         # Early Stopping and Checkpointing
         if avg_val_loss < best_val_loss:
@@ -472,6 +491,30 @@ def train(args):
     writer.close()
     print("Training finished.")
 
+def train_wrapper(config, base_args, dataset_data=None):
+    """
+    Wrapper to convert Ray Tune config to args and call train.
+    """
+    import copy
+    # Deep copy base args to avoid modifying it for other trials (though processes are usually separate)
+    args = copy.deepcopy(base_args)
+    
+    # Inject dataset_data if provided via with_parameters
+    if dataset_data is not None:
+        args.dataset_data = dataset_data
+    
+    # Update args with config values
+    for k, v in config.items():
+        # Handle hyphen vs underscore
+        k_normalized = k.replace('-', '_')
+        if hasattr(args, k_normalized):
+             setattr(args, k_normalized, v)
+        else:
+             print(f"Warning: Config key {k} ({k_normalized}) is not a valid argument.")
+    
+    # Run training
+    train(args)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Car Action Prediction Model')
     
@@ -500,6 +543,98 @@ if __name__ == '__main__':
 
     parser.add_argument('--oversample', action='store_true', help='Oversample high-curvature data')
     parser.add_argument('--target-curvature-std', type=float, default=1.0, help='Target standard deviation for curvature distribution when oversampling')
+    
+    parser.add_argument('--ray-grid-search', type=str, help='JSON string specifying hyperparameter grid search (e.g., \'{"batch-size": [16, 32], "lr": [1e-3, 1e-4], "dropout": [0.1, 0.2], "weighted-loss-alpha": [1.0, 2.0]}\')')
+
+    parser.add_argument('--ray-resources', type=str, default='{"cpu": 2, "gpu": 1.0}', help='JSON string specifying resources per trial (e.g., \'{"cpu": 2, "gpu": 1.0}\')')
 
     args = parser.parse_args()
-    train(args)
+
+    if args.ray_grid_search:
+        # Ray Grid Search Mode
+        print(f"Starting Ray Grid Search with params: {args.ray_grid_search}")
+        
+        try:
+            search_params = json.loads(args.ray_grid_search)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing --ray-grid-search JSON: {e}")
+            exit(1)
+
+        try:
+            resources_per_trial = json.loads(args.ray_resources)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing --ray-resources JSON: {e}")
+            exit(1)
+            
+        print(f"Resources per trial: {resources_per_trial}")
+
+        print(f"Resources per trial: {resources_per_trial}")
+
+        # Initialize Ray
+        ray.init(ignore_reinit_error=True)
+        
+        # Load Dataset Once for Shared Memory
+        dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+        metadata_file = os.path.join(dataset_dir, f"{args.dataset}.json")
+        
+        if not os.path.exists(metadata_file):
+            print(f"Error: Dataset metadata file not found during pre-load: {metadata_file}")
+            # We don't exit here, we let train() fail or we can exit.
+            # But let's load it.
+            exit(1)
+            
+        print(f"Pre-loading dataset metadata from {metadata_file} to Ray Object Store...")
+        with open(metadata_file, 'r') as f:
+            dataset_dict = json.load(f)
+            
+        # Put in Object Store
+        # Ray automatically handles large objects when passed to remote functions/actors, 
+        # but with_parameters ensures it's put in the store and passed as object ref.
+        # Actually verify: tune.with_parameters replaces the value with the object ref in the config dict.
+        # So 'dataset_data' key in config will have the actual data (deserialized) or the ref?
+        # "The parameters are automatically put into the Ray object store. The function will receive the dereferenced objects."
+        # Perfect.
+        
+        # Build Grid Search Config
+        param_space = {}
+        for key, values in search_params.items():
+            if not isinstance(values, list):
+                print(f"Error: Value for {key} must be a list of values to search over.")
+                exit(1)
+            param_space[key] = tune.grid_search(values)
+            
+        print(f"Parameter Space: {param_space}")
+        
+        # Create Tuner
+        # We need to pass 'args' to the wrapper. We can use tune.with_parameters.
+        # But wait, 'param_space' defines the variable parts. 'args' provides the fixed parts.
+        
+        # Apply resources
+        trainable = tune.with_resources(
+            tune.with_parameters(train_wrapper, base_args=args, dataset_data=dataset_dict),
+            resources=resources_per_trial
+        )
+        
+        tuner = tune.Tuner(
+            trainable,
+            param_space=param_space,
+            run_config=tune.RunConfig(
+                name=f"tune_{args.dataset}_{int(time.time())}",
+                storage_path=os.path.expanduser("~/roboracer_ws/data/ray_results")
+            ),
+             tune_config=tune.TuneConfig(
+                metric="loss",
+                mode="min",
+            )
+        )
+        
+        results = tuner.fit()
+        
+        print("Grid Search Completed.")
+        best_result = results.get_best_result(metric="loss", mode="min")
+        print(f"Best Result: {best_result.config}")
+        print(f"Best Loss: {best_result.metrics.get('loss')}")
+        
+    else:
+        # Normal Training Mode
+        train(args)
