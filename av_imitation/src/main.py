@@ -13,6 +13,7 @@ import numpy as np
 from dataloader import get_dataloader, AVDataset
 from models import CNN, MLP, Transformer
 import ray
+import pandas as pd
 from ray import tune
 from ray import train as ray_train
 
@@ -196,21 +197,34 @@ def train(args):
     
     if args.oversample:
         print("Oversampling enabled. Calculating weights...")
-        print("Oversampling enabled. Calculating weights...")
         # Create dataset first to access samples
         train_ds = AVDataset(metadata_file, split='train', data=dataset_data)
         
         # Extract curvatures (index 0 of first future action)
         # s['future_actions'] is list of [curvature, velocity]
         curvatures = []
-        for s in train_ds.samples:
-            # Check shape of future_actions
-            # It should be list of lists or numpy array
-            acts = s['future_actions']
-            if len(acts) > 0:
-                curvatures.append(acts[0][0])
-            else:
-                curvatures.append(0.0)
+        if isinstance(train_ds.samples, pd.DataFrame):
+            # Optimized pandas access
+            # 'future_actions' column contains lists of [curvature, velocity]
+            # We can use apply to extract curvatures
+            # But checking length first is good.
+            # Assuming all samples have valid future_actions or handle empty
+            # Pandas vectorization is faster
+            def get_curvature(act):
+                if len(act) > 0:
+                    return act[0][0]
+                return 0.0
+            curvatures = train_ds.samples['future_actions'].apply(get_curvature).values
+        else:
+            for s in train_ds.samples:
+                # Check shape of future_actions
+                # It should be list of lists or numpy array
+                acts = s['future_actions']
+                if len(acts) > 0:
+                    curvatures.append(acts[0][0])
+                else:
+                    curvatures.append(0.0)
+            curvatures = np.array(curvatures)
         
         curvatures = np.array(curvatures)
         
@@ -264,7 +278,6 @@ def train(args):
         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=False, 
                                                  sampler=train_sampler, **train_dl_kwargs)
         
-        print(f"Oversampling initialized. Target Std: {target_std}")
         print(f"Oversampling initialized. Target Std: {target_std}")
     else:
         train_loader = get_dataloader(metadata_file, split='train', batch_size=args.batch_size, shuffle=True, **train_dl_kwargs, dataset_data=dataset_data)
@@ -487,7 +500,7 @@ def train(args):
     writer.close()
     print("Training finished.")
 
-def train_wrapper(config, base_args, dataset_data=None):
+def train_wrapper(config, base_args, dataset_data=None, cpu_resources=None):
     """
     Wrapper to convert Ray Tune config to args and call train.
     """
@@ -507,6 +520,18 @@ def train_wrapper(config, base_args, dataset_data=None):
              setattr(args, k_normalized, v)
         else:
              print(f"Warning: Config key {k} ({k_normalized}) is not a valid argument.")
+
+    # Dynamic Worker Scaling
+    # Use explicitly passed cpu_resources if available
+    if cpu_resources is not None:
+        cpu_alloc = cpu_resources
+        # We need one CPU for the training loop itself (main thread), 
+        # remaining can be workers.
+        adjusted_workers = int(max(0, cpu_alloc - 1))
+        
+        if args.num_workers > adjusted_workers:
+            print(f"Ray Tune: Adjusting num_workers from {args.num_workers} to {adjusted_workers} to match allocated CPU resources ({cpu_alloc}).")
+            args.num_workers = adjusted_workers
     
     # Run training
     train(args)
@@ -561,8 +586,6 @@ if __name__ == '__main__':
         except json.JSONDecodeError as e:
             print(f"Error parsing --ray-resources JSON: {e}")
             exit(1)
-            
-        print(f"Resources per trial: {resources_per_trial}")
 
         print(f"Resources per trial: {resources_per_trial}")
 
@@ -583,6 +606,10 @@ if __name__ == '__main__':
         with open(metadata_file, 'r') as f:
             dataset_dict = json.load(f)
             
+        # Optimize: Convert samples to Pandas DataFrame
+        print("Converting samples to Pandas DataFrame for memory efficiency...")
+        dataset_dict['samples'] = pd.DataFrame(dataset_dict['samples'])
+        
         # Put in Object Store
         # Ray automatically handles large objects when passed to remote functions/actors, 
         # but with_parameters ensures it's put in the store and passed as object ref.
@@ -605,9 +632,12 @@ if __name__ == '__main__':
         # We need to pass 'args' to the wrapper. We can use tune.with_parameters.
         # But wait, 'param_space' defines the variable parts. 'args' provides the fixed parts.
         
+        # Determine CPU resources per trial to pass to wrapper
+        cpu_per_trial = resources_per_trial.get("cpu", 0) + resources_per_trial.get("CPU", 0)
+        
         # Apply resources
         trainable = tune.with_resources(
-            tune.with_parameters(train_wrapper, base_args=args, dataset_data=dataset_dict),
+            tune.with_parameters(train_wrapper, base_args=args, dataset_data=dataset_dict, cpu_resources=cpu_per_trial),
             resources=resources_per_trial
         )
         

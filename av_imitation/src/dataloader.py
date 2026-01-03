@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import cv2
+import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader as TorchDataLoader
 
@@ -64,15 +65,20 @@ class AVDataset(Dataset):
         # We can hash the sample ID or bag name.
         # Better: Split by bag to avoid data leakage (highly correlated frames).
         
-        # Group samples by bag
-        bag_samples = {}
-        for s in samples:
-            bag = s['bag']
-            if bag not in bag_samples:
-                bag_samples[bag] = []
-            bag_samples[bag].append(s)
-            
-        bags = sorted(list(bag_samples.keys()))
+        is_dataframe = isinstance(samples, pd.DataFrame)
+
+        if is_dataframe:
+            bags = sorted(samples['bag'].unique())
+        else:
+            # Group samples by bag
+            bag_samples = {}
+            for s in samples:
+                bag = s['bag']
+                if bag not in bag_samples:
+                    bag_samples[bag] = []
+                bag_samples[bag].append(s)
+                
+            bags = sorted(list(bag_samples.keys()))
         
         # Simple split: 70/15/15
         # Use a fixed seed for reproducibility
@@ -101,9 +107,19 @@ class AVDataset(Dataset):
         else:
             target_bags = test_bags
             
-        for s in samples:
-            if s['bag'] in target_bags:
-                filtered.append(s)
+        if is_dataframe:
+            # Filter DataFrame
+            filtered = samples[samples['bag'].isin(target_bags)]
+            # Reset index might not be needed if we use iloc, but cleaner
+            # Actually, WeightedRandomSampler needs RangeIndex if we use simple indexing?
+            # No, sampler yields indices from 0 to len(dataset)-1.
+            # So we don't need reset_index strictly if we use iloc[idx].
+            # But let's verify usage in __getitem__.
+            pass
+        else:
+            for s in samples:
+                if s['bag'] in target_bags:
+                    filtered.append(s)
                 
         return filtered
 
@@ -139,7 +155,10 @@ class AVDataset(Dataset):
         return path
 
     def __getitem__(self, idx):
-        sample_info = self.samples[idx]
+        if isinstance(self.samples, pd.DataFrame):
+            sample_info = self.samples.iloc[idx].to_dict()
+        else:
+            sample_info = self.samples[idx]
         
         # Load images
         # History images
