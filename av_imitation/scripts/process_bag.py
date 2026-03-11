@@ -25,8 +25,9 @@ def main():
     
     args = parser.parse_args()
     
-    bag_dir = os.path.expanduser(f"~/roboracer_ws/data/rosbags/{args.bag_name}")
-    processed_base_dir = os.path.expanduser("~/roboracer_ws/data/rosbags_processed")
+    data_dir = '/data' if os.path.exists('/data') else os.path.expanduser('~/roboracer_ws/data')
+    bag_dir = os.path.join(data_dir, f"rosbags/{args.bag_name}")
+    processed_base_dir = os.path.join(data_dir, "rosbags_processed")
     metadata_path = os.path.join(processed_base_dir, f"{args.bag_name}.json")
     
     # Create output directory

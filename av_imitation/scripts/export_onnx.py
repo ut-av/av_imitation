@@ -22,8 +22,9 @@ import torch.onnx
 from av_imitation.src.models import CNN, CNNOnnx, MLP, MLPOnnx, Transformer, TransformerOnnx
 
 # Default experiments directory
-EXPERIMENTS_DIR = os.path.expanduser('~/roboracer_ws/data/experiments')
-DATASETS_DIR = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+DATA_DIR = '/data' if os.path.exists('/data') else os.path.expanduser('~/roboracer_ws/data')
+EXPERIMENTS_DIR = os.path.join(DATA_DIR, 'experiments')
+DATASETS_DIR = os.path.join(DATA_DIR, 'rosbags_processed', 'datasets')
 
 
 def load_dataset_metadata(dataset_name: str) -> dict:

@@ -43,8 +43,9 @@ static_dir = os.path.join(package_share_directory, 'webapp', 'static')
 
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 
-BAG_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags")
-PROCESSED_DIR = os.path.expanduser("~/roboracer_ws/data/rosbags_processed")
+DATA_DIR = '/data' if os.path.exists('/data') else os.path.expanduser('~/roboracer_ws/data')
+BAG_DIR = os.path.join(DATA_DIR, 'rosbags')
+PROCESSED_DIR = os.path.join(DATA_DIR, 'rosbags_processed')
 DATASETS_DIR = os.path.join(PROCESSED_DIR, "datasets")
 if not os.path.exists(DATASETS_DIR):
     os.makedirs(DATASETS_DIR)
@@ -1223,7 +1224,7 @@ def serve_processed_file(filepath):
 
 @app.route('/api/experiments')
 def list_experiments():
-    experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+    experiments_dir = os.path.join(DATA_DIR, 'experiments')
     if not os.path.exists(experiments_dir):
         return jsonify([])
     experiments = [d for d in os.listdir(experiments_dir) if os.path.isdir(os.path.join(experiments_dir, d))]
@@ -1263,7 +1264,7 @@ def convert_to_onnx():
         
     try:
         # Paths
-        experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+        experiments_dir = os.path.join(DATA_DIR, 'experiments')
         exp_path = os.path.join(experiments_dir, experiment_name)
         if not os.path.exists(exp_path):
              return jsonify({'error': 'Experiment not found'}), 404
@@ -1306,7 +1307,7 @@ def convert_to_onnx():
         if not input_channels or not output_steps:
              dataset_name = meta.get('dataset')
              if dataset_name:
-                 dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+                 dataset_dir = os.path.join(DATA_DIR, 'rosbags_processed/datasets')
                  ds_meta_path = os.path.join(dataset_dir, f"{dataset_name}.json")
                  if os.path.exists(ds_meta_path):
                      with open(ds_meta_path, 'r') as f:
@@ -1411,14 +1412,14 @@ def run_inference():
         return jsonify({'error': 'Experiment and Dataset names required'}), 400
         
     # Paths
-    experiments_dir = os.path.expanduser('~/roboracer_ws/data/experiments')
+    experiments_dir = os.path.join(DATA_DIR, 'experiments')
     exp_path = os.path.join(experiments_dir, experiment_name)
     models_path = os.path.join(exp_path, 'models')
     onnx_path = os.path.join(models_path, 'best_model.onnx')
     pth_path = os.path.join(models_path, 'best_model.pth')
     training_meta_path = os.path.join(models_path, 'training_metadata.json')
     
-    dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+    dataset_dir = os.path.join(DATA_DIR, 'rosbags_processed/datasets')
     dataset_meta_file = os.path.join(dataset_dir, f"{dataset_name}.json")
     
     if not os.path.exists(dataset_meta_file):

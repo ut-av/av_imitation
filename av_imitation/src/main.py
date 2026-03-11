@@ -13,6 +13,11 @@ import numpy as np
 from dataloader import get_dataloader, AVDataset
 from models import CNN, MLP, Transformer
 import ray
+
+def get_data_dir():
+    import os
+    return '/data' if os.path.exists('/data') else os.path.expanduser('~/roboracer_ws/data')
+
 import pandas as pd
 from ray import tune
 from ray import train as ray_train
@@ -102,7 +107,7 @@ def compute_dataset_stats(dataloader):
 
 def train(args):
     # Setup paths
-    dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+    dataset_dir = os.path.join(get_data_dir(), 'rosbags_processed/datasets')
     metadata_file = os.path.join(dataset_dir, f"{args.dataset}.json")
     
     if not os.path.exists(metadata_file):
@@ -111,7 +116,7 @@ def train(args):
     # Create experiment directory
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     experiment_name = f"{timestamp}_{args.model}_{args.dataset}"
-    experiment_dir = os.path.expanduser(f"~/roboracer_ws/data/experiments/{experiment_name}")
+    experiment_dir = os.path.join(get_data_dir(), f"experiments/{experiment_name}")
     models_dir = os.path.join(experiment_dir, "models")
     log_dir = os.path.join(experiment_dir, "tensorboard")
     
@@ -593,7 +598,7 @@ if __name__ == '__main__':
         ray.init(ignore_reinit_error=True)
         
         # Load Dataset Once for Shared Memory
-        dataset_dir = os.path.expanduser('~/roboracer_ws/data/rosbags_processed/datasets')
+        dataset_dir = os.path.join(get_data_dir(), 'rosbags_processed/datasets')
         metadata_file = os.path.join(dataset_dir, f"{args.dataset}.json")
         
         if not os.path.exists(metadata_file):
@@ -646,7 +651,7 @@ if __name__ == '__main__':
             param_space=param_space,
             run_config=tune.RunConfig(
                 name=f"tune_{args.dataset}_{int(time.time())}",
-                storage_path=os.path.expanduser("~/roboracer_ws/data/ray_results")
+                storage_path=os.path.join(get_data_dir(), 'ray_results')
             ),
              tune_config=tune.TuneConfig(
                 metric="loss",

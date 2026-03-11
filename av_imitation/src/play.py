@@ -24,7 +24,8 @@ class ModelPlayer(Node):
         self.camera_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
         
         # Construct paths
-        experiment_dir = os.path.expanduser(f'~/roboracer_ws/data/experiments/{self.experiment_name}')
+        data_dir = '/data' if os.path.exists('/data') else os.path.expanduser('~/roboracer_ws/data')
+        experiment_dir = os.path.join(data_dir, f'experiments/{self.experiment_name}')
         self.model_path = os.path.join(experiment_dir, 'models', 'best_model.onnx')
         metadata_path = self.model_path.replace('.onnx', '_onnx_metadata.json')
         if not os.path.exists(metadata_path):
