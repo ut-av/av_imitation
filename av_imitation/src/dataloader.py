@@ -59,67 +59,42 @@ class AVDataset(Dataset):
         # Cache for images if needed? No, let's load on fly.
         
     def _filter_split(self, samples, split):
-        # Deterministic split based on bag name or hash
-        # Or maybe the metadata file already has splits?
-        # The requirement says "handles train/test/val splits so that the splits are the same each time".
-        # We can hash the sample ID or bag name.
-        # Better: Split by bag to avoid data leakage (highly correlated frames).
-        
+        # Deterministic split by examples (80/16/4)
         is_dataframe = isinstance(samples, pd.DataFrame)
 
-        if is_dataframe:
-            bags = sorted(samples['bag'].unique())
-        else:
-            # Group samples by bag
-            bag_samples = {}
-            for s in samples:
-                bag = s['bag']
-                if bag not in bag_samples:
-                    bag_samples[bag] = []
-                bag_samples[bag].append(s)
-                
-            bags = sorted(list(bag_samples.keys()))
+        n = len(samples)
+        indices = list(range(n))
         
-        # Simple split: 70/15/15
         # Use a fixed seed for reproducibility
         import random
         random.seed(42)
-        random.shuffle(bags)
+        random.shuffle(indices)
         
-        n = len(bags)
-        if n > 1:
-            n_val = max(1, int(0.15 * n))
+        if n > 2:
+            n_val = max(1, int(0.16 * n))
+            n_test = max(1, int(0.04 * n))
+        elif n == 2:
+            n_val = 1
+            n_test = 0
         else:
             n_val = 0
+            n_test = 0
             
-        n_test = int(0.15 * n)
         n_train = n - n_val - n_test
         
-        train_bags = set(bags[:n_train])
-        val_bags = set(bags[n_train:n_train+n_val])
-        test_bags = set(bags[n_train+n_val:])
-        
-        filtered = []
         if split == 'train':
-            target_bags = train_bags
+            target_indices = indices[:n_train]
         elif split == 'val':
-            target_bags = val_bags
+            target_indices = indices[n_train:n_train+n_val]
         else:
-            target_bags = test_bags
+            target_indices = indices[n_train+n_val:]
+            
+        target_indices = sorted(target_indices)
             
         if is_dataframe:
-            # Filter DataFrame
-            filtered = samples[samples['bag'].isin(target_bags)]
-            # Reset index might not be needed if we use iloc, but cleaner
-            # Actually, WeightedRandomSampler needs RangeIndex if we use simple indexing?
-            # No, sampler yields indices from 0 to len(dataset)-1.
-            # So we don't need reset_index strictly if we use iloc[idx].
-            # But let's verify usage in __getitem__.
-            pass
+            filtered = samples.iloc[target_indices].reset_index(drop=True)
         else:
-            for s in samples:
-                if s['bag'] in target_bags:
-                    filtered.append(s)
+            filtered = [samples[i] for i in target_indices]
                 
         return filtered
 

@@ -370,7 +370,7 @@ Examples:
     
     parser.add_argument(
         '--experiment-name', type=str,
-        help='Name of the experiment folder in ~/roboracer_ws/data/experiments/ (e.g., 20251124_235857_mlp_outdoor_v1)'
+        help='Name of the experiment folder in the data/experiments/ folder (e.g., 20251124_235857_mlp_outdoor_v1)'
     )
     parser.add_argument(
         '--weights', type=str,
