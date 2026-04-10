@@ -333,7 +333,26 @@ def train(args):
     model = model.to(device)
     
     # Compute Statistics
-    mean_stats, std_stats, act_mean_stats, act_std_stats = compute_dataset_stats(train_loader)
+    stats_cache_path = metadata_file.replace('.json', '_stats.json')
+    if os.path.exists(stats_cache_path):
+        print(f"Loading dataset statistics from cache: {stats_cache_path}")
+        with open(stats_cache_path, 'r') as f:
+            stats_cache = json.load(f)
+        mean_stats = stats_cache['mean']
+        std_stats = stats_cache['std']
+        act_mean_stats = stats_cache['action_mean']
+        act_std_stats = stats_cache['action_std']
+    else:
+        mean_stats, std_stats, act_mean_stats, act_std_stats = compute_dataset_stats(train_loader)
+        print(f"Caching dataset statistics to: {stats_cache_path}")
+        stats_cache = {
+            'mean': mean_stats,
+            'std': std_stats,
+            'action_mean': act_mean_stats,
+            'action_std': act_std_stats
+        }
+        with open(stats_cache_path, 'w') as f:
+            json.dump(stats_cache, f, indent=2)
     
     # Create tensors for normalization
     # Shape for broadcasting: (1, 1, C, 1, 1)

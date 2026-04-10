@@ -470,8 +470,8 @@ def preview_processing():
     timestamp = data.get('timestamp')
     options = data.get('options', {})
     
-    if not bag_name or timestamp is None:
-        return jsonify({"error": "Bag name and timestamp required"}), 400
+    if not bag_name or not isinstance(bag_name, str) or timestamp is None:
+        return jsonify({"error": "Bag name (string) and timestamp required"}), 400
         
     bag_path = os.path.join(BAG_DIR, bag_name)
     cv_img = get_cv_image_from_bag(bag_path, timestamp)
@@ -729,8 +729,8 @@ def process_bag():
     bag_name = data.get('bag_name')
     options = data.get('options', {})
     
-    if not bag_name:
-        return jsonify({"error": "Bag name required"}), 400
+    if not bag_name or not isinstance(bag_name, str):
+        return jsonify({"error": "Bag name required as string"}), 400
         
     bag_path = os.path.join(BAG_DIR, bag_name)
     if not os.path.exists(bag_path):
@@ -770,8 +770,8 @@ def check_processing():
     bag_name = data.get('bag_name')
     options = data.get('options', {})
     
-    if not bag_name:
-        return jsonify({"error": "Bag name required"}), 400
+    if not bag_name or not isinstance(bag_name, str):
+        return jsonify({"error": "Bag name required as string"}), 400
         
     folder_name = processor.get_output_folder_name(options)
     output_dir = os.path.join(PROCESSED_DIR, folder_name, bag_name)

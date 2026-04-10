@@ -1278,7 +1278,7 @@ createApp({
         };
 
         const startProcessing = async (targetBagOverride = null, skipConfirm = false) => {
-            const targetBag = targetBagOverride || currentBag.value;
+            const targetBag = (targetBagOverride && typeof targetBagOverride === 'string') ? targetBagOverride : currentBag.value;
             if (!targetBag) return;
 
             if (!skipConfirm && existingProcessing.value && targetBag === currentBag.value) {
