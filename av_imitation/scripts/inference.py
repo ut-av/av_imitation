@@ -68,6 +68,12 @@ class InferenceNode(Node):
         # Default channels per frame (assuming RGB if not specified)
         self.channels_per_frame = 3
         
+        # Normalization defaults (identity transforms when metadata is missing)
+        self.image_mean = np.array([0.0], dtype=np.float32)
+        self.image_std = np.array([1.0], dtype=np.float32)
+        self.action_mean = np.array([0.0, 0.0], dtype=np.float32)
+        self.action_std = np.array([1.0, 1.0], dtype=np.float32)
+        
         # Validate model path
         if not self.model_path:
             self.get_logger().error('Model path not specified! Use --ros-args -p model_path:=/path/to/model.onnx')
@@ -151,15 +157,64 @@ class InferenceNode(Node):
             # Load number of history frames
             if metadata.get('n_frames'):
                 self.num_history_frames = metadata['n_frames']
+            elif metadata.get('history_frames'):
+                self.num_history_frames = metadata['history_frames']
             elif metadata.get('input_channels'):
                  # Legacy heuristic: if input_channels > 3 and n_frames not present, guess
                  pass
             
-            self.output_steps = metadata.get('output_steps', 10)
+            self.output_steps = metadata.get('output_steps', metadata.get('future_frames', 10))
+
+            # Load image normalization stats
+            if metadata.get('mean') is not None:
+                self.image_mean = np.array(metadata['mean'], dtype=np.float32)
+            if metadata.get('std') is not None:
+                self.image_std = np.array(metadata['std'], dtype=np.float32)
+
+            # Load action normalization stats
+            if metadata.get('action_mean') is not None:
+                self.action_mean = np.array(metadata['action_mean'], dtype=np.float32)
+            if metadata.get('action_std') is not None:
+                self.action_std = np.array(metadata['action_std'], dtype=np.float32)
+
+            # Guard against divide-by-zero in normalization
+            self.image_std = np.where(self.image_std == 0.0, 1.0, self.image_std)
+            self.action_std = np.where(self.action_std == 0.0, 1.0, self.action_std)
+
             self.get_logger().info(f'Loaded metadata: {metadata}')
+            self.get_logger().info(
+                f'Normalization stats: image_mean={self.image_mean.tolist()}, '
+                f'image_std={self.image_std.tolist()}, action_mean={self.action_mean.tolist()}, '
+                f'action_std={self.action_std.tolist()}'
+            )
         else:
             self.output_steps = 10  # Default
             self.get_logger().warn(f'No metadata file found at {metadata_path}')
+
+    def _normalize_input_tensor(self, input_tensor: np.ndarray) -> np.ndarray:
+        """Apply training-time normalization to stacked model inputs."""
+        channels = input_tensor.shape[1]
+        mean = self.image_mean
+        std = self.image_std
+
+        if mean.size == channels:
+            mean_vec = mean
+            std_vec = std
+        elif mean.size == self.channels_per_frame and channels % self.channels_per_frame == 0:
+            repeats = channels // self.channels_per_frame
+            mean_vec = np.tile(mean, repeats)
+            std_vec = np.tile(std, repeats)
+        else:
+            self.get_logger().warn(
+                f'Image normalization shape mismatch (stats={mean.size}, input_channels={channels}); '
+                'falling back to identity normalization.',
+                throttle_duration_sec=5.0
+            )
+            return input_tensor
+
+        mean_vec = mean_vec.reshape(1, channels, 1, 1)
+        std_vec = std_vec.reshape(1, channels, 1, 1)
+        return (input_tensor - mean_vec) / std_vec
     
     def _init_onnx_session(self):
         """Initialize ONNX Runtime session with appropriate execution provider."""
@@ -284,6 +339,7 @@ class InferenceNode(Node):
             
             # Add batch dimension: (1, C, H, W)
             input_tensor = np.expand_dims(stacked, axis=0)
+            input_tensor = self._normalize_input_tensor(input_tensor)
             
             # Run inference
             outputs = self.session.run(
@@ -320,8 +376,9 @@ class InferenceNode(Node):
             return
         
         # Use first predicted action (immediate timestep)
-        steering = float(self.latest_actions[0, 0])
-        speed = float(self.latest_actions[0, 1])
+        denorm_actions = (self.latest_actions * self.action_std) + self.action_mean
+        steering = float(denorm_actions[0, 0])
+        speed = float(denorm_actions[0, 1])
         
         # Apply scaling
         steering = steering * self.steering_scale
