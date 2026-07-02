@@ -1,0 +1,18 @@
+kind: package
+name: av_imitation
+dependencies:
+- rclpy
+- rosbag2_py
+- cv_bridge
+- sensor_msgs
+- geometry_msgs
+- std_msgs
+- builtin_interfaces
+- amrl_msgs
+- ut_automata
+- ackermann_msgs
+- python3-flask
+- python3-opencv
+- python3-numpy
+source_path: .
+ros_distro: jazzy
