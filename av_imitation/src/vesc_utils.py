@@ -37,18 +37,44 @@ def parse_lua_config(content):
     
     return config
 
+def find_config_dir():
+    """
+    Finds ut_automata's config directory, trying in order:
+      - the installed package share, which is the copy vesc_driver (through
+        --config_dir) and the joystick node actually load
+      - ~/workspace/src/ut_automata/config, where airfield mounts the source
+      - ~/roboracer_ws/src/ut_automata/config, the pre-airfield workspace
+    Returns the first that exists, or the last candidate if none do.
+    """
+    candidates = []
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        candidates.append(os.path.join(get_package_share_directory('ut_automata'), 'config'))
+    except (ImportError, LookupError, OSError):
+        # Not built, or ROS not sourced: fall through to the source paths.
+        pass
+    candidates.append(os.path.expanduser("~/workspace/src/ut_automata/config"))
+    candidates.append(os.path.expanduser("~/roboracer_ws/src/ut_automata/config"))
+
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[-1]
+
 def load_vesc_config():
     """
-    Loads VESC and Joystick configurations from the standard location.
+    Loads VESC and Joystick configurations from ut_automata's config directory.
     Returns a dictionary merged from both config files.
     """
     config_data = {}
-    # Path to config files (assuming standard location)
-    config_dir = os.path.expanduser("~/roboracer_ws/src/ut_automata/config")
-    
+    config_dir = find_config_dir()
+
     vesc_lua_path = os.path.join(config_dir, "vesc.lua")
     joystick_lua_path = os.path.join(config_dir, "joystick.lua")
-    
+
+    if not os.path.exists(vesc_lua_path) and not os.path.exists(joystick_lua_path):
+        print(f"Warning: no vesc.lua or joystick.lua in {config_dir}; using default steering parameters")
+
     if os.path.exists(vesc_lua_path):
         with open(vesc_lua_path, 'r') as f:
             config_data.update(parse_lua_config(f.read()))
