@@ -14,5 +14,12 @@ dependencies:
 - python3-flask
 - python3-opencv
 - python3-numpy
+# GPU builds, resolved by project-local recipes in dependencies/arm64/ that
+# shadow the shared recipe book (airfield checks the project first). The shared
+# `torch`/`onnxruntime` recipes install CPU-only wheels, which on the Orin leave
+# training, ONNX export and inference running on the CPU or failing outright.
+- torch
+- onnxruntime
+- tensorboard
 source_path: .
 ros_distro: jazzy
