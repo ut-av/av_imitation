@@ -1,23 +1,13 @@
 kind: package
 name: av_imitation
-dependencies:
-- rclpy
-- rosbag2_py
-- cv_bridge
-- sensor_msgs
-- geometry_msgs
-- std_msgs
-- builtin_interfaces
-- amrl_msgs
-- ut_automata
-- ackermann_msgs
-- python3-flask
-- python3-opencv
-- python3-numpy
-# GPU builds, resolved by project-local recipes in dependencies/arm64/ that
-# shadow the shared recipe book (airfield checks the project first). The shared
-# `torch`/`onnxruntime` recipes install CPU-only wheels, which on the Orin leave
+# The ROS dependencies come from package.xml, which airfield reads at build
+# time. Only the GPU ML stack is listed here, because package.xml can't express
+# it: these are resolved by project-local recipes in dependencies/arm64/ (torch,
+# onnxruntime) and dependencies/xplatform/ (tensorboard) that shadow the shared
+# recipe book (airfield checks the project first). The shared `torch`/
+# `onnxruntime` recipes install CPU-only wheels, which on the Orin leave
 # training, ONNX export and inference running on the CPU or failing outright.
+dependencies:
 - torch
 - onnxruntime
 - tensorboard
